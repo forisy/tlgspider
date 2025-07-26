@@ -1,7 +1,9 @@
-name: ci
+name: docker-image
 
 on:
   push:
+    tags:
+      - 'v*'  # 仅在推送如 v1.0.0 这类 tag 时触发
 
 jobs:
   docker:
