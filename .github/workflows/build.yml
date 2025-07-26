@@ -1,11 +1,9 @@
-name: Build PyInstaller Binary
+name: Release tlgspider binaries
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  workflow_dispatch:
+    tags:
+      - 'v*'  # 仅在推送如 v1.0.0 这类 tag 时触发
 
 jobs:
   build:
@@ -37,17 +35,36 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt pyinstaller
 
-    - name: Build with PyInstaller
+    - name: Build with PyInstaller using .spec
       run: |
-        pyinstaller --onefile --name=tlgspider main.py
+        pyinstaller tlgspider.spec
 
     - name: Rename output binary
       run: |
         mv dist/tlgspider dist/${{ matrix.artifact_name }}${{ matrix.ext }}
       shell: bash
 
-    - name: Upload artifact
+    - name: Upload artifact for Release
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.artifact_name }}
         path: dist/${{ matrix.artifact_name }}${{ matrix.ext }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ github.ref_name }}
+        name: Release ${{ github.ref_name }}
+        files: |
+          artifacts/**/*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
