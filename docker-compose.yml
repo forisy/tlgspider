@@ -1,0 +1,20 @@
+
+services:
+  tlgspider:
+    image: forisy/tlgspider:latest
+    env_file: .env
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tlgspider
+    restart: always
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+    volumes:
+      - ./data:/app/data
+    networks:
+      - tlg_network
+
+networks:
+  tlg_network:
+    driver: bridge
