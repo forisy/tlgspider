@@ -1,0 +1,5 @@
+telethon
+asyncio
+tqdm
+pysocks
+requests[socks]

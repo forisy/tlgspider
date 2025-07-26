@@ -5,3 +5,5 @@ channels.txt
 last_ids.json
 data
 *.log
+dist
+build

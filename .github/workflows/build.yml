@@ -1,0 +1,53 @@
+name: Build PyInstaller Binary
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: tlgspider-linux
+            ext: ""
+          - os: windows-latest
+            artifact_name: tlgspider-windows
+            ext: ".exe"
+          - os: macos-latest
+            artifact_name: tlgspider-macos
+            ext: ""
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt pyinstaller
+
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller --onefile --name=tlgspider main.py
+
+    - name: Rename output binary
+      run: |
+        mv dist/tlgspider dist/${{ matrix.artifact_name }}${{ matrix.ext }}
+      shell: bash
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.artifact_name }}
+        path: dist/${{ matrix.artifact_name }}${{ matrix.ext }}
