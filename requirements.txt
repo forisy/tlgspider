@@ -3,3 +3,4 @@ asyncio
 tqdm
 pysocks
 requests[socks]
+mutagen

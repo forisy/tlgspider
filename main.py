@@ -14,6 +14,8 @@ from telethon.tl.types import InputPeerEmpty
 from tqdm import tqdm
 from asyncio import Semaphore
 from collections import deque
+from mutagen.mp3 import MP3
+from mutagen.id3 import ID3NoHeaderError
 
 # 配置常量
 DISABLE_TQDM = os.getenv('TGDL_DISABLE_TQDM', 'false').lower() == 'true'
@@ -86,9 +88,10 @@ class ConfigManager:
             if 'audio_quality_check' not in config:
                 config['audio_quality_check'] = {
                     'enabled': False,
-                    'check_type': 'size',  # 'size' 或 'bitrate' 或 'both'
+                    'check_type': 'size',  # 'size', 'bitrate', 'duration' 或 'both'
                     'min_size_mb': 1,  # 最小文件大小（MB）
-                    'min_bitrate_kbps': 128  # 最小比特率（kbps）
+                    'min_bitrate_kbps': 128,  # 最小比特率（kbps）
+                    'min_duration_seconds': 0  # 最小音频时长（秒）
                 }
             # 添加下载参数配置（如果不存在）
             if 'download_settings' not in config:
@@ -126,7 +129,8 @@ class ConfigManager:
                 'enabled': input("是否启用音频质量检查(yes/no): ").lower() == 'yes',
                 'check_type': input("质量检查方式(size/bitrate/both): ") if input("是否启用音频质量检查(yes/no): ").lower() == 'yes' else 'size',
                 'min_size_mb': float(input("最小文件大小(MB): ")) if input("是否启用音频质量检查(yes/no): ").lower() == 'yes' else 1,
-                'min_bitrate_kbps': int(input("最小比特率(kbps): ")) if input("是否启用音频质量检查(yes/no): ").lower() == 'yes' else 128
+                'min_bitrate_kbps': int(input("最小比特率(kbps): ")) if input("是否启用音频质量检查(yes/no): ").lower() == 'yes' else 128,
+                'min_duration_seconds': float(input("最小音频时长(秒): ")) if input("是否启用音频质量检查(yes/no): ").lower() == 'yes' else 0
             },
             'download_settings': {
                 'max_file_size_mb': int(os.getenv('TGDL_MAX_FILE_SIZE_MB', '500')),
@@ -307,6 +311,20 @@ class AudioQualityChecker:
         self.config = config
         self.quality_check_config = config.get('audio_quality_check', {})
 
+    def _get_audio_metadata(self, file_path: str) -> dict:
+        """获取本地音频文件的元数据（时长和比特率）"""
+        metadata = {'duration': 0, 'bitrate': 0}
+        try:
+            audio = MP3(file_path)
+            metadata['duration'] = audio.info.length
+            metadata['bitrate'] = audio.info.bitrate / 1000  # 转换为kbps
+        except ID3NoHeaderError:
+            logger.warning(f'文件 {file_path} 没有ID3标签，尝试作为普通文件处理。')
+            # 可以尝试其他方式获取，例如ffprobe，但这里简化处理
+        except Exception as e:
+            logger.error(f'获取音频元数据失败: {file_path}, 错误: {e}')
+        return metadata
+
     def should_replace_audio(self, save_path: str, doc, size: int) -> bool:
         """检查是否需要替换现有的音频文件
         
@@ -321,45 +339,86 @@ class AudioQualityChecker:
         if not self.quality_check_config.get('enabled', False):
             return False
 
-        if not os.path.exists(save_path):
+        existing_file_exists = os.path.exists(save_path)
+        existing_size = os.path.getsize(save_path) if existing_file_exists else 0
+        existing_duration = 0
+        existing_bitrate = 0
+
+        if existing_file_exists:
+            existing_metadata = self._get_audio_metadata(save_path)
+            existing_duration = existing_metadata['duration']
+            existing_bitrate = existing_metadata['bitrate']
+
+        check_type = self.quality_check_config.get('check_type', 'size')
+        min_size = self.quality_check_config.get('min_size_mb', 1) * 1024 * 1024
+        min_bitrate_kbps = self.quality_check_config.get('min_bitrate_kbps', 128)
+        min_duration_seconds = self.quality_check_config.get('min_duration_seconds', 0)
+
+        new_bitrate = None
+        new_duration = None
+        for attr in doc.attributes:
+            if hasattr(attr, 'bitrate'):
+                new_bitrate = attr.bitrate / 1000  # 转换为kbps
+            if hasattr(attr, 'duration'):
+                new_duration = attr.duration
+
+        # 检查新文件是否满足最低要求
+        if new_duration is not None and new_duration < min_duration_seconds:
+            logger.info(f'新音频文件时长 {new_duration:.2f}s 不满足最低要求 {min_duration_seconds:.2f}s，跳过下载: {save_path}')
+            return False
+        if new_bitrate is not None and new_bitrate < min_bitrate_kbps:
+            logger.info(f'新音频文件比特率 {new_bitrate:.2f}kbps 不满足最低要求 {min_bitrate_kbps:.2f}kbps，跳过下载: {save_path}')
+            return False
+        if size < min_size:
+            logger.info(f'新音频文件大小 {size/1024/1024:.2f}MB 不满足最低要求 {min_size/1024/1024:.2f}MB，跳过下载: {save_path}')
+            return False
+
+        if not existing_file_exists:
+            # 如果文件不存在，且新文件满足所有最低要求，则下载
+            logger.info(f'文件不存在，新音频文件满足所有最低要求，开始下载: {save_path}')
             return True
 
-        existing_size = os.path.getsize(save_path)
-        check_type = self.quality_check_config.get('check_type', 'size')
-        check_results = []
+        # 比较新旧文件质量
+        should_replace = False
+        log_reason = ''
 
-        # 大小检查
-        if check_type == 'size' or check_type == 'both':
-            min_size = self.quality_check_config.get('min_size_mb', 1) * 1024 * 1024
-            check_results.append(
-                size > existing_size and size >= min_size
-            )
+        if check_type == 'size':
+            should_replace = size > existing_size
+            log_reason = '大小更大'
+        elif check_type == 'bitrate':
+            should_replace = new_bitrate is not None and new_bitrate > existing_bitrate
+            log_reason = '比特率更高'
+        elif check_type == 'duration':
+            should_replace = new_duration is not None and new_duration > existing_duration
+            log_reason = '时长更长'
+        elif check_type == 'both':
+            # 综合判断：新文件在大小、比特率、时长上都优于旧文件，或者至少不差且有一项更优
+            size_better = size > existing_size
+            bitrate_better = new_bitrate is not None and new_bitrate > existing_bitrate
+            duration_better = new_duration is not None and new_duration > existing_duration
 
-        # 比特率检查
-        if check_type == 'bitrate' or check_type == 'both':
-            new_bitrate = None
-            for attr in doc.attributes:
-                if hasattr(attr, 'bitrate'):
-                    new_bitrate = attr.bitrate / 1000  # 转换为kbps
-                    break
-            
-            if new_bitrate:
-                check_results.append(
-                    new_bitrate >= self.quality_check_config.get('min_bitrate_kbps', 128)
-                )
+            should_replace = size_better and bitrate_better and duration_better
+            log_reason = '大小、比特率、时长都更好'
 
-        # 根据检查类型确定最终结果
-        if check_type == 'both':
-            # 两个条件都必须满足
-            should_replace = all(check_results)
-        else:
-            # 满足任一条件即可
-            should_replace = any(check_results)
+        # 补充：如果新文件比旧文件差，则不替换
+        if existing_file_exists:
+            if check_type == 'size' and size <= existing_size:
+                logger.info(f'新音频文件大小 {size/1024/1024:.2f}MB 不如现有文件 {existing_size/1024/1024:.2f}MB，跳过下载: {save_path}')
+                return False
+            if check_type == 'bitrate' and new_bitrate is not None and new_bitrate <= existing_bitrate:
+                logger.info(f'新音频文件比特率 {new_bitrate:.2f}kbps 不如现有文件 {existing_bitrate:.2f}kbps，跳过下载: {save_path}')
+                return False
+            if check_type == 'duration' and new_duration is not None and new_duration <= existing_duration:
+                logger.info(f'新音频文件时长 {new_duration:.2f}s 不如现有文件 {existing_duration:.2f}s，跳过下载: {save_path}')
+                return False
+            if check_type == 'both' and not (size > existing_size and new_bitrate > existing_bitrate and new_duration > existing_duration):
+                logger.info(f'新音频文件在大小、比特率、时长上不完全优于现有文件，跳过下载: {save_path}')
+                return False
 
         if should_replace:
-            logger.info(f'发现更高质量的音频文件（基于{check_type}），将覆盖: {save_path}')
+            logger.info(f'发现更高质量的音频文件（{log_reason}），将覆盖: {save_path}')
         else:
-            logger.info(f'已存在的音频文件质量足够（基于{check_type}），跳过: {save_path}')
+            logger.info(f'已存在的音频文件质量足够，跳过: {save_path}')
 
         return should_replace
 
