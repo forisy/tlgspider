@@ -99,7 +99,8 @@ class ConfigManager:
                     'max_retry_delay': int(os.getenv('TGDL_MAX_RETRY_DELAY', '1800')),
                     'max_retries': int(os.getenv('TGDL_MAX_RETRIES', '0')),
                     'max_concurrent_downloads': int(os.getenv('TGDL_MAX_CONCURRENT_DOWNLOADS', '3')),
-                    'batch_size': int(os.getenv('TGDL_BATCH_SIZE', '15'))
+                    'batch_size': int(os.getenv('TGDL_BATCH_SIZE', '15')),
+                    'progress_step': int(os.getenv('TGDL_PROGRESS_STEP', '10'))
                 }
                 ConfigManager.save_config(config)
         return config
@@ -134,7 +135,8 @@ class ConfigManager:
                 'max_retry_delay': int(os.getenv('TGDL_MAX_RETRY_DELAY', '1800')),
                 'max_retries': int(os.getenv('TGDL_MAX_RETRIES', '0')),
                 'max_concurrent_downloads': int(os.getenv('TGDL_MAX_CONCURRENT_DOWNLOADS', '3')),
-                'batch_size': int(os.getenv('TGDL_BATCH_SIZE', '15'))
+                'batch_size': int(os.getenv('TGDL_BATCH_SIZE', '15')),
+                'progress_step': int(os.getenv('TGDL_PROGRESS_STEP', '10'))
             }
         }
         logger.info('创建新的配置文件')
@@ -222,7 +224,8 @@ class ConfigManager:
             'max_retry_delay': int(os.getenv('TGDL_MAX_RETRY_DELAY', str(download_settings.get('max_retry_delay', 1800)))),
             'max_retries': int(os.getenv('TGDL_MAX_RETRIES', str(download_settings.get('max_retries', 0)))),
             'max_concurrent_downloads': int(os.getenv('TGDL_MAX_CONCURRENT_DOWNLOADS', str(download_settings.get('max_concurrent_downloads', 3)))),
-            'batch_size': int(os.getenv('TGDL_BATCH_SIZE', str(download_settings.get('batch_size', 15))))
+            'batch_size': int(os.getenv('TGDL_BATCH_SIZE', str(download_settings.get('batch_size', 15)))),
+            'progress_step': int(os.getenv('TGDL_PROGRESS_STEP', str(download_settings.get('progress_step', 10))))
         }
 class FileManager:
     @staticmethod
@@ -274,15 +277,30 @@ class MediaValidator:
         return is_valid
 
 class ProgressTracker:
-    def __init__(self):
-        self.last_triggered = -10
+    def __init__(self, step: int = 10):
+        self.step = step
+        self.last_triggered: dict[str, int] = {}
 
     def check(self, safe_name: str, current: float, total: float):
+        if total == 0:
+            return
+
         percentage = (current / total) * 100
-        stage = int(percentage // 10) * 10
-        if stage >= 10 and stage != self.last_triggered:
-            self.last_triggered = stage
-            logger.info(f'下载进度 {safe_name}: {stage:.1f}% ({current/1024/1024:.2f}/{total/1024/1024:.2f}MB)')
+        rounded = int(percentage // self.step) * self.step
+
+        last = self.last_triggered.get(safe_name, -1)
+        if rounded != last:
+            self.last_triggered[safe_name] = rounded
+            current_mb = current / 1024 / 1024
+            total_mb = total / 1024 / 1024
+            logger.info(
+                f'下载进度 {safe_name}: {rounded}% ({current_mb:.2f}/{total_mb:.2f}MB)'
+            )
+
+    def clear(self, safe_name: str):
+        """在下载完成后清除该文件的记录，释放内存"""
+        self.last_triggered.pop(safe_name, None)
+
 
 class AudioQualityChecker:
     def __init__(self, config):
@@ -396,10 +414,10 @@ class TelegramDownloader:
         logger.info('初始化 TelegramDownloader')
         self.config = ConfigManager.load_config()
         self.client = None
-        self.progress_tracker = ProgressTracker()
         self.audio_checker = AudioQualityChecker(self.config)
         self.preprocessor = None
         self.download_settings = ConfigManager.get_download_settings(self.config)
+        self.progress_tracker = ProgressTracker(self.download_settings['progress_step'] if 'progress_step' in self.download_settings else 10)
 
     async def initialize(self) -> None:
         logger.info('开始初始化客户端')
@@ -531,6 +549,9 @@ class TelegramDownloader:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
                 logger.debug(f'删除临时文件: {tmp_path}')
+        finally:
+            # 清理进度跟踪器
+            DISABLE_TQDM and self.progress_tracker.clear(safe_name)
 
     async def _limited_download(self, sem: Semaphore, message, title: str):
         async with sem:
