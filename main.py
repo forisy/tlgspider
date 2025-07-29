@@ -14,8 +14,9 @@ from telethon.tl.types import InputPeerEmpty
 from tqdm import tqdm
 from asyncio import Semaphore
 from collections import deque
-from mutagen.mp3 import MP3
 from mutagen.id3 import ID3NoHeaderError
+from mutagen.flac import FLAC
+from mutagen import File
 
 # 配置常量
 DISABLE_TQDM = os.getenv('TGDL_DISABLE_TQDM', 'false').lower() == 'true'
@@ -72,6 +73,19 @@ for directory in [DATA_DIR, CONFIG_DIR, SESSION_DIR, MEDIA_DIR]:
 
 # 全局状态
 stop_event = asyncio.Event()
+
+def fmtWithUnits(value: float | None, unit: str = '') -> str:
+    """格式化数值为带单位的字符串"""
+    if value is None:
+        return 'N/A'
+    if unit == 'MB':
+        return f'{value / (1024 * 1024):.2f} MB'
+    elif unit == 'kbps':
+        return f'{value:.2f} kbps'
+    elif unit == 's':
+        return f'{value:.2f} s'
+    else:
+        return str(value)
 
 class ConfigManager:
     @staticmethod
@@ -315,9 +329,23 @@ class AudioQualityChecker:
         """获取本地音频文件的元数据（时长和比特率）"""
         metadata = {'duration': 0, 'bitrate': 0}
         try:
-            audio = MP3(file_path)
-            metadata['duration'] = audio.info.length
-            metadata['bitrate'] = audio.info.bitrate / 1000  # 转换为kbps
+            try:
+                audio = FLAC(file_path)
+                metadata['duration'] = audio.info.length
+                metadata['bitrate'] = audio.info.length * audio.info.bits_per_sample * audio.info.sample_rate / 1000 # FLAC没有直接的bitrate，估算
+            except Exception:
+                # Fallback for other formats or if FLAC fails
+                audio = File(file_path)
+                if audio and audio.info:
+                    metadata['duration'] = audio.info.length
+                    if hasattr(audio.info, 'bitrate'):
+                        metadata['bitrate'] = audio.info.bitrate / 1000
+                    elif hasattr(audio.info, 'sample_rate') and hasattr(audio.info, 'bits_per_sample') and hasattr(audio.info, 'channels'):
+                        # Estimate bitrate for formats like WAV, FLAC if not directly available
+                        metadata['bitrate'] = (audio.info.sample_rate * audio.info.bits_per_sample * audio.info.channels) / 1000
+                else:
+                    logger.warning(f'无法获取文件 {file_path} 的元数据。')
+
         except ID3NoHeaderError:
             logger.warning(f'文件 {file_path} 没有ID3标签，尝试作为普通文件处理。')
             # 可以尝试其他方式获取，例如ffprobe，但这里简化处理
@@ -340,20 +368,7 @@ class AudioQualityChecker:
             return False
 
         existing_file_exists = os.path.exists(save_path)
-        existing_size = os.path.getsize(save_path) if existing_file_exists else 0
-        existing_duration = 0
-        existing_bitrate = 0
-
-        if existing_file_exists:
-            existing_metadata = self._get_audio_metadata(save_path)
-            existing_duration = existing_metadata['duration']
-            existing_bitrate = existing_metadata['bitrate']
-
-        check_type = self.quality_check_config.get('check_type', 'size')
-        min_size = self.quality_check_config.get('min_size_mb', 1) * 1024 * 1024
-        min_bitrate_kbps = self.quality_check_config.get('min_bitrate_kbps', 128)
-        min_duration_seconds = self.quality_check_config.get('min_duration_seconds', 0)
-
+        # 获取新文件的比特率和时长
         new_bitrate = None
         new_duration = None
         for attr in doc.attributes:
@@ -362,15 +377,31 @@ class AudioQualityChecker:
             if hasattr(attr, 'duration'):
                 new_duration = attr.duration
 
+        existing_size = 0
+        existing_duration = None
+        existing_bitrate = None
+        if existing_file_exists:
+            existing_metadata = self._get_audio_metadata(save_path)
+            existing_duration = existing_metadata['duration']
+            existing_bitrate = existing_metadata['bitrate']
+            existing_size = os.path.getsize(save_path)
+
+        logger.info(f"文件替换对比 {save_path}: 新: size={fmtWithUnits(size, 'MB')}, bitrate={fmtWithUnits(new_bitrate, 'kbps')}, duration={fmtWithUnits(new_duration, 's')} 旧: size={fmtWithUnits(existing_size, 'MB')}, bitrate={fmtWithUnits(existing_bitrate, 'kbps')}, duration={fmtWithUnits(existing_duration, 's')}")
+
+        check_type = self.quality_check_config.get('check_type', 'size')
+        min_size = self.quality_check_config.get('min_size_mb', 1) * 1024 * 1024
+        min_bitrate_kbps = self.quality_check_config.get('min_bitrate_kbps', 128)
+        min_duration_seconds = self.quality_check_config.get('min_duration_seconds', 0)
+
         # 检查新文件是否满足最低要求
         if new_duration is not None and new_duration < min_duration_seconds:
-            logger.info(f'新音频文件时长 {new_duration:.2f}s 不满足最低要求 {min_duration_seconds:.2f}s，跳过下载: {save_path}')
+            logger.info(f'新音频文件时长 不满足最低要求 {min_duration_seconds:.2f}s，跳过下载: {save_path}')
             return False
         if new_bitrate is not None and new_bitrate < min_bitrate_kbps:
-            logger.info(f'新音频文件比特率 {new_bitrate:.2f}kbps 不满足最低要求 {min_bitrate_kbps:.2f}kbps，跳过下载: {save_path}')
+            logger.info(f'新音频文件比特率 不满足最低要求 {min_bitrate_kbps:.2f}kbps，跳过下载: {save_path}')
             return False
         if size < min_size:
-            logger.info(f'新音频文件大小 {size/1024/1024:.2f}MB 不满足最低要求 {min_size/1024/1024:.2f}MB，跳过下载: {save_path}')
+            logger.info(f'新音频文件大小 不满足最低要求 {min_size/1024/1024:.2f}MB，跳过下载: {save_path}')
             return False
 
         if not existing_file_exists:
@@ -386,40 +417,54 @@ class AudioQualityChecker:
             should_replace = size > existing_size
             log_reason = '大小更大'
         elif check_type == 'bitrate':
-            should_replace = new_bitrate is not None and new_bitrate > existing_bitrate
+            should_replace = new_bitrate is not None and (existing_bitrate is None or new_bitrate > existing_bitrate) 
             log_reason = '比特率更高'
         elif check_type == 'duration':
-            should_replace = new_duration is not None and new_duration > existing_duration
+            should_replace = new_duration is not None and (existing_duration is None or new_duration > existing_duration)
             log_reason = '时长更长'
         elif check_type == 'both':
             # 综合判断：新文件在大小、比特率、时长上都优于旧文件，或者至少不差且有一项更优
-            size_better = size > existing_size
-            bitrate_better = new_bitrate is not None and new_bitrate > existing_bitrate
-            duration_better = new_duration is not None and new_duration > existing_duration
-
-            should_replace = size_better and bitrate_better and duration_better
-            log_reason = '大小、比特率、时长都更好'
+            # 如果旧文件没有比特率或时长信息，则认为新文件在这方面更优
+            should_replace = False
+            if existing_file_exists:
+                # 只有当所有指标都更好时才替换
+                if size > existing_size and \
+                   (new_bitrate is not None and (existing_bitrate is None or new_bitrate > existing_bitrate)) and \
+                   (new_duration is not None and (existing_duration is None or new_duration > existing_duration)):
+                    should_replace = True
+                    log_reason = '大小、比特率、时长都更优'
+                # 或者，如果大小相同，但比特率或时长更好
+                elif size == existing_size and \
+                     ((new_bitrate is not None and (existing_bitrate is None or new_bitrate > existing_bitrate)) or \
+                      (new_duration is not None and (existing_duration is None or new_duration > existing_duration))):
+                    should_replace = True
+                    log_reason = '大小相同，但比特率或时长更优'
+            else:
+                # 如果旧文件不存在，则直接替换
+                should_replace = True
+                log_reason = '旧文件不存在'
 
         # 补充：如果新文件比旧文件差，则不替换
         if existing_file_exists:
             if check_type == 'size' and size <= existing_size:
-                logger.info(f'新音频文件大小 {size/1024/1024:.2f}MB 不如现有文件 {existing_size/1024/1024:.2f}MB，跳过下载: {save_path}')
+                logger.info(f'新音频文件大小 不如现有文件 {existing_size/1024/1024:.2f}MB，跳过下载: {save_path}')
                 return False
             if check_type == 'bitrate' and new_bitrate is not None and new_bitrate <= existing_bitrate:
-                logger.info(f'新音频文件比特率 {new_bitrate:.2f}kbps 不如现有文件 {existing_bitrate:.2f}kbps，跳过下载: {save_path}')
+                logger.info(f'新音频文件比特率 不如现有文件 {existing_bitrate:.2f}kbps，跳过下载: {save_path}')
                 return False
             if check_type == 'duration' and new_duration is not None and new_duration <= existing_duration:
-                logger.info(f'新音频文件时长 {new_duration:.2f}s 不如现有文件 {existing_duration:.2f}s，跳过下载: {save_path}')
+                logger.info(f'新音频文件时长 不如现有文件 {existing_duration:.2f}s，跳过下载: {save_path}')
                 return False
-            if check_type == 'both' and not (size > existing_size and new_bitrate > existing_bitrate and new_duration > existing_duration):
+            if check_type == 'both' and not (size > existing_size and \
+                                             (new_bitrate is not None and (existing_bitrate is None or new_bitrate > existing_bitrate)) and \
+                                             (new_duration is not None and (existing_duration is None or new_duration > existing_duration))):
                 logger.info(f'新音频文件在大小、比特率、时长上不完全优于现有文件，跳过下载: {save_path}')
                 return False
 
         if should_replace:
-            logger.info(f'发现更高质量的音频文件（{log_reason}），将覆盖: {save_path}')
+            logger.info(f'新文件 {log_reason}，准备替换: {save_path}')
         else:
-            logger.info(f'已存在的音频文件质量足够，跳过: {save_path}')
-
+            logger.info(f'新文件质量不满足替换要求，跳过下载: {save_path}')
         return should_replace
 
 class MessagePreprocessor:
