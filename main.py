@@ -102,9 +102,8 @@ class ConfigManager:
             if 'audio_quality_check' not in config:
                 config['audio_quality_check'] = {
                     'enabled': False,
-                    'check_type': 'size',  # 'size', 'bitrate', 'duration' 或 'both'
+                    'check_type': 'size',  # 'size', 'duration' 或 'both'
                     'min_size_mb': 1,  # 最小文件大小（MB）
-                    'min_bitrate_kbps': 128,  # 最小比特率（kbps）
                     'min_duration_seconds': 0  # 最小音频时长（秒）
                 }
             # 添加下载参数配置（如果不存在）
@@ -141,9 +140,8 @@ class ConfigManager:
             'selected_channels': [],
             'audio_quality_check': {
                 'enabled': input("是否启用音频质量检查(yes/no): ").lower() == 'yes',
-                'check_type': input("质量检查方式(size/bitrate/both): ") if input("是否启用音频质量检查(yes/no): ").lower() == 'yes' else 'size',
+                'check_type': input("质量检查方式(size/duration/both): ") if input("是否启用音频质量检查(yes/no): ").lower() == 'yes' else 'size',
                 'min_size_mb': float(input("最小文件大小(MB): ")) if input("是否启用音频质量检查(yes/no): ").lower() == 'yes' else 1,
-                'min_bitrate_kbps': int(input("最小比特率(kbps): ")) if input("是否启用音频质量检查(yes/no): ").lower() == 'yes' else 128,
                 'min_duration_seconds': float(input("最小音频时长(秒): ")) if input("是否启用音频质量检查(yes/no): ").lower() == 'yes' else 0
             },
             'download_settings': {
@@ -369,36 +367,27 @@ class AudioQualityChecker:
 
         existing_file_exists = os.path.exists(save_path)
         # 获取新文件的比特率和时长
-        new_bitrate = None
         new_duration = None
         for attr in doc.attributes:
-            if hasattr(attr, 'bitrate'):
-                new_bitrate = attr.bitrate / 1000  # 转换为kbps
             if hasattr(attr, 'duration'):
                 new_duration = attr.duration
 
         existing_size = 0
         existing_duration = None
-        existing_bitrate = None
         if existing_file_exists:
             existing_metadata = self._get_audio_metadata(save_path)
             existing_duration = existing_metadata['duration']
-            existing_bitrate = existing_metadata['bitrate']
             existing_size = os.path.getsize(save_path)
 
-        logger.info(f"文件替换对比 {save_path}: 新: size={fmtWithUnits(size, 'MB')}, bitrate={fmtWithUnits(new_bitrate, 'kbps')}, duration={fmtWithUnits(new_duration, 's')} 旧: size={fmtWithUnits(existing_size, 'MB')}, bitrate={fmtWithUnits(existing_bitrate, 'kbps')}, duration={fmtWithUnits(existing_duration, 's')}")
+        logger.info(f"文件替换对比 {save_path}: 新: size={fmtWithUnits(size, 'MB')}, duration={fmtWithUnits(new_duration, 's')} 旧: size={fmtWithUnits(existing_size, 'MB')}, bitrate={fmtWithUnits(existing_bitrate, 'kbps')}, duration={fmtWithUnits(existing_duration, 's')}")
 
         check_type = self.quality_check_config.get('check_type', 'size')
         min_size = self.quality_check_config.get('min_size_mb', 1) * 1024 * 1024
-        min_bitrate_kbps = self.quality_check_config.get('min_bitrate_kbps', 128)
         min_duration_seconds = self.quality_check_config.get('min_duration_seconds', 0)
 
         # 检查新文件是否满足最低要求
         if new_duration is not None and new_duration < min_duration_seconds:
             logger.info(f'新音频文件时长 不满足最低要求 {min_duration_seconds:.2f}s，跳过下载: {save_path}')
-            return False
-        if new_bitrate is not None and new_bitrate < min_bitrate_kbps:
-            logger.info(f'新音频文件比特率 不满足最低要求 {min_bitrate_kbps:.2f}kbps，跳过下载: {save_path}')
             return False
         if size < min_size:
             logger.info(f'新音频文件大小 不满足最低要求 {min_size/1024/1024:.2f}MB，跳过下载: {save_path}')
@@ -416,9 +405,6 @@ class AudioQualityChecker:
         if check_type == 'size':
             should_replace = size > existing_size
             log_reason = '大小更大'
-        elif check_type == 'bitrate':
-            should_replace = new_bitrate is not None and (existing_bitrate is None or new_bitrate > existing_bitrate) 
-            log_reason = '比特率更高'
         elif check_type == 'duration':
             should_replace = new_duration is not None and (existing_duration is None or new_duration > existing_duration)
             log_reason = '时长更长'
@@ -429,14 +415,12 @@ class AudioQualityChecker:
             if existing_file_exists:
                 # 只有当所有指标都更好时才替换
                 if size > existing_size and \
-                   (new_bitrate is not None and (existing_bitrate is None or new_bitrate > existing_bitrate)) and \
                    (new_duration is not None and (existing_duration is None or new_duration > existing_duration)):
                     should_replace = True
                     log_reason = '大小、比特率、时长都更优'
                 # 或者，如果大小相同，但比特率或时长更好
                 elif size == existing_size and \
-                     ((new_bitrate is not None and (existing_bitrate is None or new_bitrate > existing_bitrate)) or \
-                      (new_duration is not None and (existing_duration is None or new_duration > existing_duration))):
+                     ((new_duration is not None and (existing_duration is None or new_duration > existing_duration))):
                     should_replace = True
                     log_reason = '大小相同，但比特率或时长更优'
             else:
@@ -449,14 +433,10 @@ class AudioQualityChecker:
             if check_type == 'size' and size <= existing_size:
                 logger.info(f'新音频文件大小 不如现有文件 {existing_size/1024/1024:.2f}MB，跳过下载: {save_path}')
                 return False
-            if check_type == 'bitrate' and new_bitrate is not None and new_bitrate <= existing_bitrate:
-                logger.info(f'新音频文件比特率 不如现有文件 {existing_bitrate:.2f}kbps，跳过下载: {save_path}')
-                return False
             if check_type == 'duration' and new_duration is not None and new_duration <= existing_duration:
                 logger.info(f'新音频文件时长 不如现有文件 {existing_duration:.2f}s，跳过下载: {save_path}')
                 return False
             if check_type == 'both' and not (size > existing_size and \
-                                             (new_bitrate is not None and (existing_bitrate is None or new_bitrate > existing_bitrate)) and \
                                              (new_duration is not None and (existing_duration is None or new_duration > existing_duration))):
                 logger.info(f'新音频文件在大小、比特率、时长上不完全优于现有文件，跳过下载: {save_path}')
                 return False
