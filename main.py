@@ -562,33 +562,14 @@ class TelegramDownloader:
             session_path,
             self.config['api_id'],
             self.config['api_hash'],
-            connection_retries=0,        # 连接重试次数，由外部逻辑控制
-            retry_delay=0,              # 重试延迟（秒），由外部逻辑控制
-            auto_reconnect=False,       # 自动重连，由外部逻辑控制
+            connection_retries=5,        # 连接重试次数
+            retry_delay=1,              # 重试延迟（秒）
+            auto_reconnect=True,        # 自动重连
             request_retries=5,          # 请求重试次数
-            timeout=60,                 # 连接超时时间
-            proxy=proxy,                 # 代理配置
-            base_logger=logger
+            timeout=30,                 # 连接超时时间
+            proxy=proxy                 # 代理配置
         )
-        retry_count = 0
-        current_delay = self.download_settings['initial_retry_delay']
-        while True:
-            try:
-                logger.info(f'连接尝试 {retry_count + 1}...')
-                await self.client.connect()
-                logger.info('连接成功！')
-                break
-            except (ConnectionError, asyncio.exceptions.IncompleteReadError) as e:
-                retry_count += 1
-                if self.download_settings['max_retries'] > 0 and retry_count > self.download_settings['max_retries']:
-                    logger.error(f'连接重试次数超过限制 {self.download_settings["max_retries"]} 次，停止重试。错误: {e}')
-                    raise
-                logger.warning(f'连接失败，第 {retry_count} 次重试，等待 {current_delay} 秒。错误: {e}')
-                await asyncio.sleep(current_delay)
-                current_delay = min(current_delay * 2, self.download_settings['max_retry_delay'])
-            except Exception as e:
-                logger.error(f'连接过程中发生未知错误: {e}')
-                raise
+        await self.client.connect()
 
         if not await self.client.is_user_authorized():
             logger.info('需要登录授权')
@@ -730,19 +711,15 @@ class TelegramDownloader:
                     retry_count = 0
                     retry_delay = self.download_settings['initial_retry_delay']
 
-                except (ConnectionError, asyncio.exceptions.IncompleteReadError) as e:
-                    logger.error(f'频道 {title} 在消息处理过程中遇到连接错误: {e}')
-                    # 连接错误由 initialize 方法处理，这里不再进行重试，直接跳过当前循环或根据需要中断
-                    break
-                except Exception as e:
-                    retry_count += 1
-                    if self.download_settings['max_retries'] > 0 and retry_count > self.download_settings['max_retries']:
-                        logger.error(f'频道 {title} 重试次数超过限制 {self.download_settings["max_retries"]} 次，停止重试。错误: {e}')
+                except ConnectionError as e:
+                    if self.download_settings['max_retries'] > 0 and retry_count >= self.download_settings['max_retries']:
+                        logger.error(f'频道 {title} 重试次数超过限制 {self.download_settings["max_retries"]} 次，停止重试')
                         break
-                    logger.warning(f'频道 {title} 处理消息时发生错误，第 {retry_count} 次重试，等待 {retry_delay} 秒: {e}')
+
+                    retry_count += 1
+                    logger.warning(f'频道 {title} 连接错误，第 {retry_count} 次重试，等待 {retry_delay} 秒: {e}')
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * 2, self.download_settings['max_retry_delay'])
-                    continue
 
         except Exception as e:
             logger.error(f'处理频道 {channel} 时发生错误: {e}')
