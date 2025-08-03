@@ -418,9 +418,11 @@ class AudioQualityChecker:
 
         existing_size = 0
         existing_duration = None
+        existing_bitrate = None
         if existing_file_exists:
             existing_metadata = self._get_audio_metadata(save_path)
             existing_duration = existing_metadata['duration']
+            existing_bitrate = existing_metadata['bitrate']
             existing_size = os.path.getsize(save_path)
 
         logger.info(f"文件替换对比 {save_path}: 新: size={fmtWithUnits(size, 'MB')}, duration={fmtWithUnits(new_duration, 's')} 旧: size={fmtWithUnits(existing_size, 'MB')}, bitrate={fmtWithUnits(existing_bitrate, 'kbps')}, duration={fmtWithUnits(existing_duration, 's')}")
