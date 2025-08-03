@@ -4,7 +4,7 @@ WORKDIR /app
 
 ENV TGDL_DATA_DIR=./data
 ENV TGDL_DISABLE_TQDM=true
-ENV TGDL_EXCLUDE_PATTERNS=\d+_video,temp_.*,draft_.*
+ENV TGDL_EXCLUDE_PATTERNS=\d+_video,temp_.*,draft_.*,.*_mpeg
 ENV TZ=Asia/Shanghai
 
 RUN apt-get update && apt-get install -y tzdata && \
