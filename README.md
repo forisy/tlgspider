@@ -59,6 +59,7 @@
 - `TGDL_MAX_CONCURRENT_DOWNLOADS`: 单个频道最大并发下载数，默认为`3`
 - `TGDL_BATCH_SIZE`: 每次从Telegram获取消息的批处理大小，默认为`15`
 - `TGDL_PROGRESS_STEP`: 下载进度日志的步长（百分比），默认为`10`
+- `TGDL_EXCLUDE_PATTERNS`: 排除指定模式的文件名，多个模式之间用逗号分隔，支持通配符 * 和 ?，默认为空
 
 ### 2. 配置文件
 

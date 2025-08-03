@@ -116,7 +116,8 @@ class ConfigManager:
                     'max_retries': int(os.getenv('TGDL_MAX_RETRIES', '0')),
                     'max_concurrent_downloads': int(os.getenv('TGDL_MAX_CONCURRENT_DOWNLOADS', '3')),
                     'batch_size': int(os.getenv('TGDL_BATCH_SIZE', '15')),
-                    'progress_step': int(os.getenv('TGDL_PROGRESS_STEP', '10'))
+                    'progress_step': int(os.getenv('TGDL_PROGRESS_STEP', '10')),
+                    'exclude_patterns': os.getenv('TGDL_EXCLUDE_PATTERNS', '').split(',') if os.getenv('TGDL_EXCLUDE_PATTERNS') else []
                 }
                 ConfigManager.save_config(config)
         return config
@@ -152,7 +153,8 @@ class ConfigManager:
                 'max_retries': int(os.getenv('TGDL_MAX_RETRIES', '0')),
                 'max_concurrent_downloads': int(os.getenv('TGDL_MAX_CONCURRENT_DOWNLOADS', '3')),
                 'batch_size': int(os.getenv('TGDL_BATCH_SIZE', '15')),
-                'progress_step': int(os.getenv('TGDL_PROGRESS_STEP', '10'))
+                'progress_step': int(os.getenv('TGDL_PROGRESS_STEP', '10')),
+                'exclude_patterns': os.getenv('TGDL_EXCLUDE_PATTERNS', '').split(',') if os.getenv('TGDL_EXCLUDE_PATTERNS') else []
             }
         }
         logger.info('创建新的配置文件')
@@ -241,7 +243,8 @@ class ConfigManager:
             'max_retries': int(os.getenv('TGDL_MAX_RETRIES', str(download_settings.get('max_retries', 0)))),
             'max_concurrent_downloads': int(os.getenv('TGDL_MAX_CONCURRENT_DOWNLOADS', str(download_settings.get('max_concurrent_downloads', 3)))),
             'batch_size': int(os.getenv('TGDL_BATCH_SIZE', str(download_settings.get('batch_size', 15)))),
-            'progress_step': int(os.getenv('TGDL_PROGRESS_STEP', str(download_settings.get('progress_step', 10))))
+            'progress_step': int(os.getenv('TGDL_PROGRESS_STEP', str(download_settings.get('progress_step', 10)))),
+            'exclude_patterns': os.getenv('TGDL_EXCLUDE_PATTERNS', '').split(',') if os.getenv('TGDL_EXCLUDE_PATTERNS') else []
         }
 class FileManager:
     @staticmethod
@@ -266,6 +269,32 @@ class FileManager:
         logger.debug(f'生成文件路径: {save_path}')
         return tmp_path, tmp_name, save_path, safe_name
 
+    @staticmethod
+    def should_exclude_file(filename: str, config: dict) -> bool:
+        """检查文件名是否应该被排除
+
+        Args:
+            filename: 文件名
+            config: 配置字典
+
+        Returns:
+            bool: 如果文件名匹配任何排除模式则返回True
+        """
+        exclude_patterns = config.get('download_settings', {}).get('exclude_patterns', [])
+        if not exclude_patterns:
+            return False
+
+        for pattern in exclude_patterns:
+            if not pattern:  # 跳过空字符串
+                continue
+            try:
+                if re.search(pattern, filename):
+                    logger.debug(f'文件名 {filename} 匹配排除模式 {pattern}')
+                    return True
+            except re.error as e:
+                logger.warning(f'排除模式 {pattern} 无效: {e}')
+        return False
+
 class MediaValidator:
     @staticmethod
     def should_download_media(message, media_types: list, config: dict) -> bool:
@@ -275,6 +304,21 @@ class MediaValidator:
 
         doc = message.media.document
         mime = doc.mime_type or ''
+        
+        # 获取文件名
+        filename = None
+        for attr in doc.attributes:
+            if isinstance(attr, DocumentAttributeFilename):
+                filename = attr.file_name
+                break
+        if not filename:
+            filename = f"{mime.replace('/', '_')}"
+            
+        # 检查文件名是否应该被排除
+        if FileManager.should_exclude_file(filename, config):
+            logger.debug(f'消息 {message.id} 的文件名 {filename} 匹配排除模式，跳过下载')
+            return False
+
         should_download = any(
             (t == 'video' and 'video' in mime) or
             (t == 'audio' and 'audio' in mime) or
