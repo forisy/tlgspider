@@ -312,7 +312,8 @@ class MediaValidator:
                 filename = attr.file_name
                 break
         if not filename:
-            filename = f"{mime.replace('/', '_')}"
+            # filename = f"{mime.replace('/', '_')}"
+            return False  # 如果没有文件名，则不下载
             
         # 检查文件名是否应该被排除
         if FileManager.should_exclude_file(filename, config):
