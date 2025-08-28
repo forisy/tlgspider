@@ -690,6 +690,7 @@ class TelegramDownloader:
 
     async def process_channel(self, channel: str) -> None:
         try:
+            logger.info(f'处理频道 ID: {channel}')
             entity = await self.client.get_entity(int(channel))
             title = entity.title or channel
             logger.info(f'开始处理频道: {title}')
