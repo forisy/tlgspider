@@ -117,7 +117,16 @@ class ConfigManager:
                     'max_concurrent_downloads': int(os.getenv('TGDL_MAX_CONCURRENT_DOWNLOADS', '3')),
                     'batch_size': int(os.getenv('TGDL_BATCH_SIZE', '15')),
                     'progress_step': int(os.getenv('TGDL_PROGRESS_STEP', '10')),
-                    'exclude_patterns': os.getenv('TGDL_EXCLUDE_PATTERNS', '').split(',') if os.getenv('TGDL_EXCLUDE_PATTERNS') else []
+                    'exclude_patterns': os.getenv('TGDL_EXCLUDE_PATTERNS', '').split(',') if os.getenv('TGDL_EXCLUDE_PATTERNS') else [],
+                    'downloading_dir': os.getenv('TGDL_DOWNLOADING_DIR', os.path.join(MEDIA_DIR, 'downloading')),
+                    'completed_dir': os.getenv('TGDL_COMPLETED_DIR', os.path.join(MEDIA_DIR, 'completed'))
+                }
+            # 添加语言过滤配置（如果不存在）
+            if 'language_filter' not in config:
+                config['language_filter'] = {
+                    'enabled': False,
+                    'languages': ['cn', 'zh'],  # 要下载的语言列表，例如 ['cn', 'zh', 'en']
+                    'detection_threshold': 0.7  # 语言检测阈值，用于从文件名判断语言的可信度
                 }
                 ConfigManager.save_config(config)
         return config
@@ -155,7 +164,12 @@ class ConfigManager:
                 'batch_size': int(os.getenv('TGDL_BATCH_SIZE', '15')),
                 'progress_step': int(os.getenv('TGDL_PROGRESS_STEP', '10')),
                 'exclude_patterns': os.getenv('TGDL_EXCLUDE_PATTERNS', '').split(',') if os.getenv('TGDL_EXCLUDE_PATTERNS') else []
-            }
+            },
+            'language_filter': {
+                'enabled': input("是否启用语言过滤(yes/no): ").lower() == 'yes',
+                'languages': input("要下载的语言列表（逗号分隔 cn,zh,en）: ").split(',') if input("是否启用语言过滤(yes/no): ").lower() == 'yes' else ['cn', 'zh'],  # 要下载的语言列表，例如 ['cn', 'zh', 'en']
+                'detection_threshold': float(input("语言检测阈值(0-1): ")) if input("是否启用语言过滤(yes/no): ").lower() == 'yes' else 0.7  # 语言检测阈值，用于从文件名判断语言的可信度
+            },
         }
         logger.info('创建新的配置文件')
         ConfigManager.save_config(config)
@@ -264,9 +278,21 @@ class FileManager:
             filename = f"{mime.replace('/', '_')}"
         safe_name = FileManager.sanitize_filename(f"{filename}")
         tmp_name = FileManager.sanitize_filename(f"{msg.id}_{filename}")
-        save_path = os.path.join(MEDIA_DIR, safe_name)
-        tmp_path = os.path.join(MEDIA_DIR, tmp_name) + '.part'
-        logger.debug(f'生成文件路径: {save_path}')
+        
+        # 获取下载设置
+        config = ConfigManager.load_config()
+        download_settings = ConfigManager.get_download_settings(config)
+        
+        # 确保目录存在
+        downloading_dir = download_settings.get('downloading_dir', os.path.join(MEDIA_DIR, 'downloading'))
+        completed_dir = download_settings.get('completed_dir', os.path.join(MEDIA_DIR, 'completed'))
+        os.makedirs(downloading_dir, exist_ok=True)
+        os.makedirs(completed_dir, exist_ok=True)
+        
+        # 生成文件路径
+        tmp_path = os.path.join(downloading_dir, tmp_name) + '.part'
+        save_path = os.path.join(completed_dir, safe_name)
+        logger.debug(f'生成文件路径: 临时={tmp_path}, 保存={save_path}')
         return tmp_path, tmp_name, save_path, safe_name
 
     @staticmethod
@@ -319,6 +345,20 @@ class MediaValidator:
         if FileManager.should_exclude_file(filename, config):
             logger.debug(f'消息 {message.id} 的文件名 {filename} 匹配排除模式，跳过下载')
             return False
+            
+        # 检查语言过滤
+        language_filter = config.get('language_filter', {})
+        if language_filter.get('enabled', False) and language_filter.get('languages'):
+            detected_lang = LanguageDetector.detect_language(
+                filename, 
+                threshold=language_filter.get('detection_threshold', 0.7)
+            )
+            if detected_lang and detected_lang not in language_filter.get('languages', []):
+                logger.debug(f'消息 {message.id} 的文件名 {filename} 检测到语言 {detected_lang}，不在允许的语言列表中，跳过下载')
+                return False
+            elif not detected_lang and 'unknown' not in language_filter.get('languages', []):
+                logger.debug(f'消息 {message.id} 的文件名 {filename} 无法检测语言，跳过下载')
+                return False
 
         should_download = any(
             (t == 'video' and 'video' in mime) or
@@ -336,6 +376,113 @@ class MediaValidator:
         is_valid = size <= max_size
         logger.debug(f'检查文件大小: {size/1024/1024:.2f}MB, 限制: {download_settings["max_file_size_mb"]}MB, 是否有效: {is_valid}')
         return is_valid
+
+class LanguageDetector:
+    """用于从文件名检测语言的工具类"""
+    
+    # 常见语言关键词映射
+    LANGUAGE_KEYWORDS = {
+        'cn': ['中文', '汉语', '普通话', '国语', 'chinese', 'mandarin', 'cn', 'zh'],
+        'en': ['英文', '英语', 'english', 'en'],
+        'jp': ['日文', '日语', 'japanese', 'jp'],
+        'kr': ['韩文', '韩语', 'korean', 'kr'],
+        'fr': ['法文', '法语', 'french', 'fr'],
+        'de': ['德文', '德语', 'german', 'de'],
+        'es': ['西班牙文', '西班牙语', 'spanish', 'es'],
+        'ru': ['俄文', '俄语', 'russian', 'ru'],
+    }
+    
+    # 语言标记正则表达式模式
+    LANGUAGE_TAG_PATTERNS = {
+        'cn': [r'\[中文\]', r'\[cn\]', r'\[zh\]', r'\[chinese\]', r'【中文】', r'【中文字幕】', r'\.cn\.'],
+        'en': [r'\[en\]', r'\[eng\]', r'\[english\]', r'【英文】', r'【英语】', r'\.en\.'],
+        'jp': [r'\[jp\]', r'\[japanese\]', r'【日文】', r'【日语】', r'\.jp\.'],
+        'kr': [r'\[kr\]', r'\[korean\]', r'【韩文】', r'【韩语】', r'\.kr\.'],
+    }
+    
+    # 歌曲文件名常见分隔符模式
+    MUSIC_FILENAME_PATTERNS = [
+        r'^(.+?)\s*[-–—_]\s*(.+)$',  # 歌手 - 歌曲
+        r'^(.+?)\s*[:\：]\s*(.+)$',   # 歌手: 歌曲
+        r'^(.+?)\s*[\[\(【]\s*(.+?)\s*[\]\)】]',  # 歌手 [歌曲] 或 歌手 (歌曲)
+    ]
+    
+    @staticmethod
+    def detect_language(filename: str, threshold: float = 0.7) -> str:
+        """
+        从文件名中检测可能的语言
+        
+        Args:
+            filename: 文件名
+            threshold: 检测阈值，越高越严格
+            
+        Returns:
+            检测到的语言代码，如果无法确定则返回空字符串
+        """
+        filename = filename.lower()
+        
+        # 1. 首先检查是否有明确的语言标记 (最高优先级)
+        for lang_code, patterns in LanguageDetector.LANGUAGE_TAG_PATTERNS.items():
+            for pattern in patterns:
+                if re.search(pattern, filename, re.IGNORECASE):
+                    return lang_code
+        
+        # 2. 检查文件名中是否包含语言关键词
+        for lang_code, keywords in LanguageDetector.LANGUAGE_KEYWORDS.items():
+            for keyword in keywords:
+                # 使用单词边界检查，避免部分匹配
+                if re.search(r'\b' + re.escape(keyword.lower()) + r'\b', filename):
+                    return lang_code
+        
+        # 3. 尝试分离歌手名和歌曲名，主要分析歌曲名部分
+        song_title = filename
+        for pattern in LanguageDetector.MUSIC_FILENAME_PATTERNS:
+            match = re.match(pattern, filename)
+            if match:
+                # 使用第二部分（通常是歌曲名）进行语言检测
+                song_title = match.group(2)
+                break
+        
+        # 4. 如果没有明确的语言关键词，尝试通过字符集特征判断
+        # 提取可能的文本部分（排除数字、特殊符号等）
+        text_parts = re.findall(r'[a-zA-Z\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7a3]+', song_title)
+        if not text_parts:
+            return ''
+            
+        # 连接所有文本部分
+        text = ''.join(text_parts)
+        text_len = max(len(text), 1)
+        
+        # 计算中文字符比例
+        chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+        chinese_ratio = chinese_chars / text_len
+        
+        # 计算日文特有字符比例
+        japanese_chars = sum(1 for c in text if ('\u3040' <= c <= '\u309f') or ('\u30a0' <= c <= '\u30ff'))
+        japanese_ratio = japanese_chars / text_len
+        
+        # 计算韩文字符比例
+        korean_chars = sum(1 for c in text if '\uac00' <= c <= '\ud7a3')
+        korean_ratio = korean_chars / text_len
+        
+        # 使用较低的阈值，因为我们已经过滤了非文本字符
+        adjusted_threshold = threshold * 0.6
+        
+        # 检查是否有任何语言超过阈值
+        if chinese_ratio > adjusted_threshold:
+            return 'cn'
+        elif japanese_ratio > adjusted_threshold:
+            return 'jp'
+        elif korean_ratio > adjusted_threshold:
+            return 'kr'
+        
+        # 如果文本主要是拉丁字母，假设是英文
+        latin_chars = sum(1 for c in text if 'a' <= c <= 'z' or 'A' <= c <= 'Z')
+        if latin_chars / text_len > 0.8:  # 如果80%以上是拉丁字母
+            return 'en'
+            
+        # 如果没有明显特征，默认返回空字符串
+        return ''
 
 class ProgressTracker:
     def __init__(self, step: int = 10):
@@ -673,8 +820,10 @@ class TelegramDownloader:
                         file=tmp_path,
                         progress_callback=lambda current, _: progress_bar.update(current - progress_bar.n)
                     )
+            
+            # 下载完成后，将文件从下载中目录移动到下载完成目录
             os.rename(tmp_path, save_path)
-            logger.info(f'下载完成: {save_path}')
+            logger.info(f'下载完成: 从 {tmp_path} 移动到 {save_path}')
         except Exception as e:
             logger.error(f'下载失败: {save_path}, 错误: {e}')
             if os.path.exists(tmp_path):
