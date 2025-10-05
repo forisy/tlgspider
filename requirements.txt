@@ -4,3 +4,4 @@ tqdm
 pysocks
 requests[socks]
 mutagen
+psutil

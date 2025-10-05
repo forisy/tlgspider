@@ -6,6 +6,7 @@ import time
 import signal
 import sys
 import logging
+import psutil
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 from telethon.tl.types import MessageMediaDocument, DocumentAttributeFilename
@@ -163,7 +164,10 @@ class ConfigManager:
                 'max_concurrent_downloads': int(os.getenv('TGDL_MAX_CONCURRENT_DOWNLOADS', '3')),
                 'batch_size': int(os.getenv('TGDL_BATCH_SIZE', '15')),
                 'progress_step': int(os.getenv('TGDL_PROGRESS_STEP', '10')),
-                'exclude_patterns': os.getenv('TGDL_EXCLUDE_PATTERNS', '').split(',') if os.getenv('TGDL_EXCLUDE_PATTERNS') else []
+                'exclude_patterns': os.getenv('TGDL_EXCLUDE_PATTERNS', '').split(',') if os.getenv('TGDL_EXCLUDE_PATTERNS') else [],
+                'downloading_dir': os.getenv('TGDL_DOWNLOADING_DIR', os.path.join(MEDIA_DIR, 'downloading')),
+                'completed_dir': os.getenv('TGDL_COMPLETED_DIR', os.path.join(MEDIA_DIR, 'completed')),
+                'min_disk_space_mb': int(os.getenv('TGDL_MIN_DISK_SPACE_MB', '500'))
             },
             'language_filter': {
                 'enabled': input("是否启用语言过滤(yes/no): ").lower() == 'yes',
@@ -258,12 +262,45 @@ class ConfigManager:
             'max_concurrent_downloads': int(os.getenv('TGDL_MAX_CONCURRENT_DOWNLOADS', str(download_settings.get('max_concurrent_downloads', 3)))),
             'batch_size': int(os.getenv('TGDL_BATCH_SIZE', str(download_settings.get('batch_size', 15)))),
             'progress_step': int(os.getenv('TGDL_PROGRESS_STEP', str(download_settings.get('progress_step', 10)))),
-            'exclude_patterns': os.getenv('TGDL_EXCLUDE_PATTERNS', '').split(',') if os.getenv('TGDL_EXCLUDE_PATTERNS') else []
+            'exclude_patterns': os.getenv('TGDL_EXCLUDE_PATTERNS', '').split(',') if os.getenv('TGDL_EXCLUDE_PATTERNS') else download_settings.get('exclude_patterns', []),
+            'downloading_dir': os.getenv('TGDL_DOWNLOADING_DIR', download_settings.get('downloading_dir', os.path.join(MEDIA_DIR, 'downloading'))),
+            'completed_dir': os.getenv('TGDL_COMPLETED_DIR', download_settings.get('completed_dir', os.path.join(MEDIA_DIR, 'completed'))),
+            'min_disk_space_mb': int(os.getenv('TGDL_MIN_DISK_SPACE_MB', str(download_settings.get('min_disk_space_mb', 500))))
         }
 class FileManager:
     @staticmethod
     def sanitize_filename(name: str) -> str:
         return re.sub(r'[^\w\-_. ]', '_', name)
+        
+    @staticmethod
+    def check_disk_space(path: str, min_space_mb: int = 500) -> bool:
+        """检查指定路径所在磁盘的可用空间是否足够
+        
+        Args:
+            path: 要检查的路径
+            min_space_mb: 最小可用空间（MB）
+            
+        Returns:
+            bool: 如果可用空间大于等于最小要求，返回True；否则返回False
+        """
+        try:
+            if not os.path.exists(path):
+                # 如果路径不存在，检查其父目录
+                path = os.path.dirname(path)
+                if not os.path.exists(path):
+                    # 如果父目录也不存在，使用当前目录
+                    path = '.'
+            
+            # 获取磁盘可用空间（以字节为单位）
+            free_space = psutil.disk_usage(path).free
+            free_space_mb = free_space / (1024 * 1024)  # 转换为MB
+            
+            logger.info(f'磁盘可用空间: {free_space_mb:.2f}MB, 最小要求: {min_space_mb}MB')
+            return free_space_mb >= min_space_mb
+        except Exception as e:
+            logger.error(f'检查磁盘空间时出错: {e}')
+            # 出错时返回True，避免因检查失败而停止下载
+            return True
 
     @staticmethod
     def get_filepath(msg, channel_title: str) -> tuple:
@@ -792,6 +829,15 @@ class TelegramDownloader:
             return
 
         tmp_path, tmp_name, save_path, safe_name = FileManager.get_filepath(message, channel_title)
+        
+        # 检查磁盘空间是否足够
+        min_disk_space_mb = self.download_settings.get('min_disk_space_mb', 500)
+        downloading_dir = self.download_settings.get('downloading_dir', os.path.join(MEDIA_DIR, 'downloading'))
+        if not FileManager.check_disk_space(downloading_dir, min_disk_space_mb):
+            logger.warning(f'磁盘空间不足 {min_disk_space_mb}MB，暂停下载: {safe_name}')
+            await asyncio.sleep(self.download_settings.get('wait_interval_seconds', 300))
+            return
+            
         mime = doc.mime_type or ''
         
         # 检查是否需要进行音频质量比较
