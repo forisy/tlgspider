@@ -94,7 +94,7 @@ class ConfigManager:
         logger.info('加载配置文件')
         if not os.path.exists(CONFIG_FILE):
             logger.info('配置文件不存在，开始初始化配置')
-            config = StateManager._create_initial_config()
+            config = ConfigManager._create_initial_config()
         else:
             logger.info('读取现有配置文件')
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
@@ -129,8 +129,139 @@ class ConfigManager:
                     'languages': ['cn', 'zh'],  # 要下载的语言列表，例如 ['cn', 'zh', 'en']
                     'detection_threshold': 0.7  # 语言检测阈值，用于从文件名判断语言的可信度
                 }
-                StateManager.save_config(config)
+                ConfigManager.save_config(config)
         return config
+
+    @staticmethod
+    def _create_initial_config() -> dict:
+        print("[首次配置] 请填写以下信息：")
+        config = {
+            'api_id': int(input("API ID: ")),
+            'api_hash': input("API HASH: "),
+            'phone_number': input("Phone Number: "),
+            'media_types': input("下载哪些类型（逗号分隔 video,audio,document）: ").split(','),
+            'proxy': {
+                'enabled': input("是否使用代理(yes/no): ").lower() == 'yes',
+                'type': input("代理类型(socks5/http/mtproxy): ") if input("是否使用代理(yes/no): ").lower() == 'yes' else '',
+                'host': input("代理主机: ") if input("是否使用代理(yes/no): ").lower() == 'yes' else '',
+                'port': int(input("代理端口: ")) if input("是否使用代理(yes/no): ").lower() == 'yes' else 0,
+                'username': input("代理用户名(可选，直接回车跳过): ") or None if input("是否使用代理(yes/no): ").lower() == 'yes' else None,
+                'password': input("代理密码(可选，直接回车跳过): ") or None if input("是否使用代理(yes/no): ").lower() == 'yes' else None
+            },
+            'selected_channels': [],
+            'audio_quality_check': {
+                'enabled': input("是否启用音频质量检查(yes/no): ").lower() == 'yes',
+                'check_type': input("质量检查方式(size/duration/both): ") if input("是否启用音频质量检查(yes/no): ").lower() == 'yes' else 'size',
+                'min_size_mb': float(input("最小文件大小(MB): ")) if input("是否启用音频质量检查(yes/no): ").lower() == 'yes' else 1,
+                'min_duration_seconds': float(input("最小音频时长(秒): ")) if input("是否启用音频质量检查(yes/no): ").lower() == 'yes' else 0
+            },
+            'download_settings': {
+                'max_file_size_mb': int(os.getenv('TGDL_MAX_FILE_SIZE_MB', '500')),
+                'wait_interval_seconds': int(os.getenv('TGDL_WAIT_INTERVAL_SECONDS', '300')),
+                'initial_retry_delay': int(os.getenv('TGDL_INITIAL_RETRY_DELAY', '1')),
+                'max_retry_delay': int(os.getenv('TGDL_MAX_RETRY_DELAY', '1800')),
+                'max_retries': int(os.getenv('TGDL_MAX_RETRIES', '0')),
+                'max_concurrent_downloads': int(os.getenv('TGDL_MAX_CONCURRENT_DOWNLOADS', '3')),
+                'batch_size': int(os.getenv('TGDL_BATCH_SIZE', '15')),
+                'progress_step': int(os.getenv('TGDL_PROGRESS_STEP', '10')),
+                'exclude_patterns': os.getenv('TGDL_EXCLUDE_PATTERNS', '').split(',') if os.getenv('TGDL_EXCLUDE_PATTERNS') else [],
+                'downloading_dir': os.getenv('TGDL_DOWNLOADING_DIR', os.path.join(MEDIA_DIR, 'downloading')),
+                'completed_dir': os.getenv('TGDL_COMPLETED_DIR', os.path.join(MEDIA_DIR, 'completed')),
+                'min_disk_space_mb': int(os.getenv('TGDL_MIN_DISK_SPACE_MB', '500'))
+            },
+            'language_filter': {
+                'enabled': input("是否启用语言过滤(yes/no): ").lower() == 'yes',
+                'languages': input("要下载的语言列表（逗号分隔 cn,zh,en）: ").split(',') if input("是否启用语言过滤(yes/no): ").lower() == 'yes' else ['cn', 'zh'],
+                'detection_threshold': float(input("语言检测阈值(0-1): ")) if input("是否启用语言过滤(yes/no): ").lower() == 'yes' else 0.7
+            },
+        }
+        logger.info('创建新的配置文件')
+        ConfigManager.save_config(config)
+        return config
+
+    @staticmethod
+    def save_config(config: dict) -> None:
+        logger.debug('保存配置文件')
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+
+    @staticmethod
+    def get_proxy_config(config: dict) -> dict:
+        proxy = None
+        if config.get('proxy', {}).get('enabled', False):
+            proxy_config = config['proxy']
+            if not proxy_config.get('host') and not proxy_config.get('port'):
+                proxy_host = os.getenv('HTTPS_PROXY') or os.getenv('HTTP_PROXY') or os.getenv('ALL_PROXY')
+                if proxy_host:
+                    # 解析代理URL
+                    if proxy_host.startswith('socks5://'):
+                        proxy_type = 'socks5'
+                        proxy_host = proxy_host[9:]
+                    elif proxy_host.startswith('http://'):
+                        proxy_type = 'http'
+                        proxy_host = proxy_host[7:]
+                    else:
+                        proxy_type = 'http'
+                    # 解析代理地址和端口
+                    if '@' in proxy_host:
+                        auth, proxy_host = proxy_host.split('@')
+                        username, password = auth.split(':')
+                    else:
+                        username = password = None
+                    host, port = proxy_host.split(':')
+                    port = int(port)
+                    proxy_config.update({
+                        'type': proxy_type,
+                        'host': host,
+                        'port': port,
+                        'username': username,
+                        'password': password
+                    })
+                    logger.info(f'从环境变量读取代理配置: {proxy_type}://{host}:{port}')
+            if proxy_config['type'] == 'socks5':
+                proxy = {
+                    'proxy_type': 'socks5',
+                    'addr': proxy_config['host'],
+                    'port': proxy_config['port'],
+                    'username': proxy_config['username'],
+                    'password': proxy_config['password']
+                }
+            elif proxy_config['type'] == 'http':
+                proxy = {
+                    'proxy_type': 'http',
+                    'addr': proxy_config['host'],
+                    'port': proxy_config['port'],
+                    'username': proxy_config['username'],
+                    'password': proxy_config['password']
+                }
+            elif proxy_config['type'] == 'mtproxy':
+                proxy = {
+                    'proxy_type': 'mtproxy',
+                    'addr': proxy_config['host'],
+                    'port': proxy_config['port'],
+                    'secret': proxy_config.get('password')
+                }
+            logger.info(f'使用{proxy_config["type"]}代理: {proxy_config["host"]}:{proxy_config["port"]}')
+        return proxy
+
+    @staticmethod
+    def get_download_settings(config: dict) -> dict:
+        """获取下载设置，优先使用配置文件中的值，如果不存在则使用环境变量，最后使用默认值"""
+        download_settings = config.get('download_settings', {})
+        return {
+            'max_file_size_mb': int(os.getenv('TGDL_MAX_FILE_SIZE_MB', str(download_settings.get('max_file_size_mb', 500)))) ,
+            'wait_interval_seconds': int(os.getenv('TGDL_WAIT_INTERVAL_SECONDS', str(download_settings.get('wait_interval_seconds', 300)))) ,
+            'initial_retry_delay': int(os.getenv('TGDL_INITIAL_RETRY_DELAY', str(download_settings.get('initial_retry_delay', 1)))) ,
+            'max_retry_delay': int(os.getenv('TGDL_MAX_RETRY_DELAY', str(download_settings.get('max_retry_delay', 1800)))) ,
+            'max_retries': int(os.getenv('TGDL_MAX_RETRIES', str(download_settings.get('max_retries', 0)))) ,
+            'max_concurrent_downloads': int(os.getenv('TGDL_MAX_CONCURRENT_DOWNLOADS', str(download_settings.get('max_concurrent_downloads', 3)))) ,
+            'batch_size': int(os.getenv('TGDL_BATCH_SIZE', str(download_settings.get('batch_size', 15)))) ,
+            'progress_step': int(os.getenv('TGDL_PROGRESS_STEP', str(download_settings.get('progress_step', 10)))) ,
+            'exclude_patterns': os.getenv('TGDL_EXCLUDE_PATTERNS', '').split(',') if os.getenv('TGDL_EXCLUDE_PATTERNS') else download_settings.get('exclude_patterns', []),
+            'downloading_dir': os.getenv('TGDL_DOWNLOADING_DIR', download_settings.get('downloading_dir', os.path.join(MEDIA_DIR, 'downloading'))),
+            'completed_dir': os.getenv('TGDL_COMPLETED_DIR', download_settings.get('completed_dir', os.path.join(MEDIA_DIR, 'completed'))),
+            'min_disk_space_mb': int(os.getenv('TGDL_MIN_DISK_SPACE_MB', str(download_settings.get('min_disk_space_mb', 500))))
+        }
 
 class StateManager:
     """用于持久化每个频道的 last_id，避免重复处理已处理消息"""
@@ -177,141 +308,6 @@ class StateManager:
         except Exception as e:
             logger.error(f'写入状态文件失败: {e}')
 
-    @staticmethod
-    def _create_initial_config() -> dict:
-        print("[首次配置] 请填写以下信息：")
-        config = {
-            'api_id': int(input("API ID: ")),
-            'api_hash': input("API HASH: "),
-            'phone_number': input("Phone Number: "),
-            'media_types': input("下载哪些类型（逗号分隔 video,audio,document）: ").split(','),
-            'proxy': {
-                'enabled': input("是否使用代理(yes/no): ").lower() == 'yes',
-                'type': input("代理类型(socks5/http/mtproxy): ") if input("是否使用代理(yes/no): ").lower() == 'yes' else '',
-                'host': input("代理主机: ") if input("是否使用代理(yes/no): ").lower() == 'yes' else '',
-                'port': int(input("代理端口: ")) if input("是否使用代理(yes/no): ").lower() == 'yes' else 0,
-                'username': input("代理用户名(可选，直接回车跳过): ") or None if input("是否使用代理(yes/no): ").lower() == 'yes' else None,
-                'password': input("代理密码(可选，直接回车跳过): ") or None if input("是否使用代理(yes/no): ").lower() == 'yes' else None
-            },
-            'selected_channels': [],
-            'audio_quality_check': {
-                'enabled': input("是否启用音频质量检查(yes/no): ").lower() == 'yes',
-                'check_type': input("质量检查方式(size/duration/both): ") if input("是否启用音频质量检查(yes/no): ").lower() == 'yes' else 'size',
-                'min_size_mb': float(input("最小文件大小(MB): ")) if input("是否启用音频质量检查(yes/no): ").lower() == 'yes' else 1,
-                'min_duration_seconds': float(input("最小音频时长(秒): ")) if input("是否启用音频质量检查(yes/no): ").lower() == 'yes' else 0
-            },
-            'download_settings': {
-                'max_file_size_mb': int(os.getenv('TGDL_MAX_FILE_SIZE_MB', '500')),
-                'wait_interval_seconds': int(os.getenv('TGDL_WAIT_INTERVAL_SECONDS', '300')),
-                'initial_retry_delay': int(os.getenv('TGDL_INITIAL_RETRY_DELAY', '1')),
-                'max_retry_delay': int(os.getenv('TGDL_MAX_RETRY_DELAY', '1800')),
-                'max_retries': int(os.getenv('TGDL_MAX_RETRIES', '0')),
-                'max_concurrent_downloads': int(os.getenv('TGDL_MAX_CONCURRENT_DOWNLOADS', '3')),
-                'batch_size': int(os.getenv('TGDL_BATCH_SIZE', '15')),
-                'progress_step': int(os.getenv('TGDL_PROGRESS_STEP', '10')),
-                'exclude_patterns': os.getenv('TGDL_EXCLUDE_PATTERNS', '').split(',') if os.getenv('TGDL_EXCLUDE_PATTERNS') else [],
-                'downloading_dir': os.getenv('TGDL_DOWNLOADING_DIR', os.path.join(MEDIA_DIR, 'downloading')),
-                'completed_dir': os.getenv('TGDL_COMPLETED_DIR', os.path.join(MEDIA_DIR, 'completed')),
-                'min_disk_space_mb': int(os.getenv('TGDL_MIN_DISK_SPACE_MB', '500'))
-            },
-            'language_filter': {
-                'enabled': input("是否启用语言过滤(yes/no): ").lower() == 'yes',
-                'languages': input("要下载的语言列表（逗号分隔 cn,zh,en）: ").split(',') if input("是否启用语言过滤(yes/no): ").lower() == 'yes' else ['cn', 'zh'],  # 要下载的语言列表，例如 ['cn', 'zh', 'en']
-                'detection_threshold': float(input("语言检测阈值(0-1): ")) if input("是否启用语言过滤(yes/no): ").lower() == 'yes' else 0.7  # 语言检测阈值，用于从文件名判断语言的可信度
-            },
-        }
-        logger.info('创建新的配置文件')
-        StateManager.save_config(config)
-        return config
-
-    @staticmethod
-    def save_config(config: dict) -> None:
-        logger.debug('保存配置文件')
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
-    
-    @staticmethod
-    def get_proxy_config(config: dict) -> dict:
-        proxy = None
-        if config.get('proxy', {}).get('enabled', False):
-            proxy_config = config['proxy']
-            # 如果代理配置为空，尝试从环境变量读取
-            if not proxy_config.get('host') and not proxy_config.get('port'):
-                proxy_host = os.getenv('HTTPS_PROXY') or os.getenv('HTTP_PROXY') or os.getenv('ALL_PROXY')
-                if proxy_host:
-                    # 解析代理URL
-                    if proxy_host.startswith('socks5://'):
-                        proxy_type = 'socks5'
-                        proxy_host = proxy_host[9:]
-                    elif proxy_host.startswith('http://'):
-                        proxy_type = 'http'
-                        proxy_host = proxy_host[7:]
-                    else:
-                        proxy_type = 'http'
-                    
-                    # 解析代理地址和端口
-                    if '@' in proxy_host:
-                        auth, proxy_host = proxy_host.split('@')
-                        username, password = auth.split(':')
-                    else:
-                        username = password = None
-                    
-                    host, port = proxy_host.split(':')
-                    port = int(port)
-                    
-                    proxy_config.update({
-                        'type': proxy_type,
-                        'host': host,
-                        'port': port,
-                        'username': username,
-                        'password': password
-                    })
-                    logger.info(f'从环境变量读取代理配置: {proxy_type}://{host}:{port}')
-            
-            if proxy_config['type'] == 'socks5':
-                proxy = {
-                    'proxy_type': 'socks5',
-                    'addr': proxy_config['host'],
-                    'port': proxy_config['port'],
-                    'username': proxy_config['username'],
-                    'password': proxy_config['password']
-                }
-            elif proxy_config['type'] == 'http':
-                proxy = {
-                    'proxy_type': 'http',
-                    'addr': proxy_config['host'],
-                    'port': proxy_config['port'],
-                    'username': proxy_config['username'],
-                    'password': proxy_config['password']
-                }
-            elif proxy_config['type'] == 'mtproxy':
-                proxy = {
-                    'proxy_type': 'mtproxy',
-                    'addr': proxy_config['host'],
-                    'port': proxy_config['port'],
-                    'secret': proxy_config.get('password')
-                }
-            logger.info(f'使用{proxy_config["type"]}代理: {proxy_config["host"]}:{proxy_config["port"]}')
-        return proxy
-
-    @staticmethod
-    def get_download_settings(config: dict) -> dict:
-        """获取下载设置，优先使用配置文件中的值，如果不存在则使用环境变量，最后使用默认值"""
-        download_settings = config.get('download_settings', {})
-        return {
-            'max_file_size_mb': int(os.getenv('TGDL_MAX_FILE_SIZE_MB', str(download_settings.get('max_file_size_mb', 500)))),
-            'wait_interval_seconds': int(os.getenv('TGDL_WAIT_INTERVAL_SECONDS', str(download_settings.get('wait_interval_seconds', 300)))),
-            'initial_retry_delay': int(os.getenv('TGDL_INITIAL_RETRY_DELAY', str(download_settings.get('initial_retry_delay', 1)))),
-            'max_retry_delay': int(os.getenv('TGDL_MAX_RETRY_DELAY', str(download_settings.get('max_retry_delay', 1800)))),
-            'max_retries': int(os.getenv('TGDL_MAX_RETRIES', str(download_settings.get('max_retries', 0)))),
-            'max_concurrent_downloads': int(os.getenv('TGDL_MAX_CONCURRENT_DOWNLOADS', str(download_settings.get('max_concurrent_downloads', 3)))),
-            'batch_size': int(os.getenv('TGDL_BATCH_SIZE', str(download_settings.get('batch_size', 15)))),
-            'progress_step': int(os.getenv('TGDL_PROGRESS_STEP', str(download_settings.get('progress_step', 10)))),
-            'exclude_patterns': os.getenv('TGDL_EXCLUDE_PATTERNS', '').split(',') if os.getenv('TGDL_EXCLUDE_PATTERNS') else download_settings.get('exclude_patterns', []),
-            'downloading_dir': os.getenv('TGDL_DOWNLOADING_DIR', download_settings.get('downloading_dir', os.path.join(MEDIA_DIR, 'downloading'))),
-            'completed_dir': os.getenv('TGDL_COMPLETED_DIR', download_settings.get('completed_dir', os.path.join(MEDIA_DIR, 'completed'))),
-            'min_disk_space_mb': int(os.getenv('TGDL_MIN_DISK_SPACE_MB', str(download_settings.get('min_disk_space_mb', 500))))
-        }
 class FileManager:
     @staticmethod
     def sanitize_filename(name: str) -> str:
@@ -363,7 +359,7 @@ class FileManager:
         
         # 获取下载设置
         config = ConfigManager.load_config()
-        download_settings = StateManager.get_download_settings(config)
+        download_settings = ConfigManager.get_download_settings(config)
         
         # 确保目录存在
         downloading_dir = download_settings.get('downloading_dir', os.path.join(MEDIA_DIR, 'downloading'))
@@ -453,7 +449,7 @@ class MediaValidator:
 
     @staticmethod
     def check_file_size(size: int, config: dict) -> bool:
-        download_settings = StateManager.get_download_settings(config)
+        download_settings = ConfigManager.get_download_settings(config)
         max_size = download_settings['max_file_size_mb'] * 1024 * 1024
         is_valid = size <= max_size
         logger.debug(f'检查文件大小: {size/1024/1024:.2f}MB, 限制: {download_settings["max_file_size_mb"]}MB, 是否有效: {is_valid}')
@@ -728,7 +724,7 @@ class MessagePreprocessor:
         self.client = client
         self.media_types = media_types
         self.config = config
-        self.download_settings = StateManager.get_download_settings(config)
+        self.download_settings = ConfigManager.get_download_settings(config)
         # 按频道维度记录已见消息及进度，避免跨频道互相影响
         self.channel_seen_ids: dict[int, set[int]] = {}
         self.channel_seen_queues: dict[int, deque] = {}
@@ -771,16 +767,15 @@ class MessagePreprocessor:
                 if len(seen_queue) == seen_queue.maxlen:
                     oldest_id = seen_queue[0]
                     seen_ids.discard(oldest_id)
-                # 记录该频道的最新消息ID并持久化
-                new_last = max(self.channel_last_id.get(channel_id, 0), msg.id)
-                if new_last != self.channel_last_id.get(channel_id, 0):
-                    self.channel_last_id[channel_id] = new_last
-                    StateManager.set_last_id(channel_id, new_last)
-                    last_id = new_last
+                # 记录该频道的最新已看到消息ID（仅运行期使用，不持久化）
+                new_seen = max(self.channel_last_id.get(channel_id, 0), msg.id)
+                if new_seen != self.channel_last_id.get(channel_id, 0):
+                    self.channel_last_id[channel_id] = new_seen
+                    last_id = new_seen
 
             if candidate_messages:
                 max_id = max((m.id for m in candidate_messages), default=last_id)
-                logger.info(f'频道 {title} 候选消息 {len(candidate_messages)} 条，最高ID={max_id}，当前持久化 last_id={last_id}')
+                logger.info(f'频道 {title} 候选消息 {len(candidate_messages)} 条，最高ID={max_id}，当前运行期 last_seen_id={last_id}')
             if not candidate_messages:
                 exhausted = True
                 logger.info(f'频道 {title} 无新消息（min_id={last_id}），结束本轮抓取')
@@ -804,7 +799,7 @@ class TelegramDownloader:
         self.client = None
         self.audio_checker = AudioQualityChecker(self.config)
         self.preprocessor = None
-        self.download_settings = StateManager.get_download_settings(self.config)
+        self.download_settings = ConfigManager.get_download_settings(self.config)
         self.progress_tracker = ProgressTracker(self.download_settings['progress_step'] if 'progress_step' in self.download_settings else 10)
 
     async def initialize(self) -> None:
@@ -814,7 +809,7 @@ class TelegramDownloader:
         logger.debug(f'使用会话文件: {session_path}')
 
         # 准备代理配置
-        proxy = StateManager.get_proxy_config(self.config)
+        proxy = ConfigManager.get_proxy_config(self.config)
 
         self.client = TelegramClient(
             session_path,
@@ -888,18 +883,18 @@ class TelegramDownloader:
                 logger.error(f'无效的选择: {choice}, 错误: {e}')
 
         self.config['selected_channels'] = selected
-        StateManager.save_config(self.config)
+        ConfigManager.save_config(self.config)
         return selected
 
-    async def download_media(self, message, channel_title: str) -> None:
+    async def download_media(self, message, channel_title: str) -> bool:
         if not MediaValidator.should_download_media(message, self.config['media_types'], self.config):
-            return
+            return False
 
         doc = message.media.document
         size = doc.size or 0
         if not MediaValidator.check_file_size(size, self.config):
             logger.warning(f'跳过大文件: {size/1024/1024:.2f}MB')
-            return
+            return False
 
         tmp_path, tmp_name, save_path, safe_name = FileManager.get_filepath(message, channel_title)
         
@@ -909,17 +904,17 @@ class TelegramDownloader:
         if not FileManager.check_disk_space(downloading_dir, min_disk_space_mb):
             logger.warning(f'磁盘空间不足 {min_disk_space_mb}MB，暂停下载: {safe_name}')
             await asyncio.sleep(self.download_settings.get('wait_interval_seconds', 300))
-            return
+            return False
             
         mime = doc.mime_type or ''
         
         # 检查是否需要进行音频质量比较
         if os.path.exists(save_path) and 'audio' in mime:
             if not self.audio_checker.should_replace_audio(save_path, doc, size):
-                return
+                return False
         elif os.path.exists(save_path):
             logger.info(f'文件已存在，跳过: {save_path}')
-            return
+            return False
 
         logger.info(f'开始下载: {safe_name}, 大小: {size/1024/1024:.2f}MB')
         try:
@@ -943,18 +938,21 @@ class TelegramDownloader:
             # 下载完成后，将文件从下载中目录移动到下载完成目录
             os.rename(tmp_path, save_path)
             logger.info(f'下载完成: 从 {tmp_path} 移动到 {save_path}')
+            return True
         except Exception as e:
             logger.error(f'下载失败: {save_path}, 错误: {e}')
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
                 logger.debug(f'删除临时文件: {tmp_path}')
+            return False
         finally:
             # 清理进度跟踪器
             DISABLE_TQDM and self.progress_tracker.clear(safe_name)
 
     async def _limited_download(self, sem: Semaphore, message, title: str):
         async with sem:
-            await self.download_media(message, title)
+            ok = await self.download_media(message, title)
+            return (message.id, ok)
 
     async def process_channel(self, channel: str) -> None:
         try:
@@ -976,7 +974,15 @@ class TelegramDownloader:
 
                     logger.info(f'{title} 获取到 {len(messages)} 条有效消息，开始并发下载')
                     tasks = [self._limited_download(sem, msg, title) for msg in messages]
-                    await asyncio.gather(*tasks)
+                    results = await asyncio.gather(*tasks)
+
+                    # 仅在成功下载后推进该频道的持久化 last_id，避免重启后遗漏未下载消息
+                    channel_id_int = int(channel)
+                    success_ids = [mid for (mid, ok) in results if ok]
+                    if success_ids:
+                        new_last = max(success_ids)
+                        StateManager.set_last_id(channel_id_int, new_last)
+                        logger.info(f'频道 {title} 成功下载推进进度: last_id -> {new_last}')
 
                     retry_count = 0
                     retry_delay = self.download_settings['initial_retry_delay']
