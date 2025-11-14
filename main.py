@@ -94,7 +94,7 @@ class ConfigManager:
         logger.info('加载配置文件')
         if not os.path.exists(CONFIG_FILE):
             logger.info('配置文件不存在，开始初始化配置')
-            config = ConfigManager._create_initial_config()
+            config = StateManager._create_initial_config()
         else:
             logger.info('读取现有配置文件')
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
@@ -129,7 +129,7 @@ class ConfigManager:
                     'languages': ['cn', 'zh'],  # 要下载的语言列表，例如 ['cn', 'zh', 'en']
                     'detection_threshold': 0.7  # 语言检测阈值，用于从文件名判断语言的可信度
                 }
-                ConfigManager.save_config(config)
+                StateManager.save_config(config)
         return config
 
 class StateManager:
@@ -221,7 +221,7 @@ class StateManager:
             },
         }
         logger.info('创建新的配置文件')
-        ConfigManager.save_config(config)
+        StateManager.save_config(config)
         return config
 
     @staticmethod
@@ -363,7 +363,7 @@ class FileManager:
         
         # 获取下载设置
         config = ConfigManager.load_config()
-        download_settings = ConfigManager.get_download_settings(config)
+        download_settings = StateManager.get_download_settings(config)
         
         # 确保目录存在
         downloading_dir = download_settings.get('downloading_dir', os.path.join(MEDIA_DIR, 'downloading'))
@@ -453,7 +453,7 @@ class MediaValidator:
 
     @staticmethod
     def check_file_size(size: int, config: dict) -> bool:
-        download_settings = ConfigManager.get_download_settings(config)
+        download_settings = StateManager.get_download_settings(config)
         max_size = download_settings['max_file_size_mb'] * 1024 * 1024
         is_valid = size <= max_size
         logger.debug(f'检查文件大小: {size/1024/1024:.2f}MB, 限制: {download_settings["max_file_size_mb"]}MB, 是否有效: {is_valid}')
@@ -728,7 +728,7 @@ class MessagePreprocessor:
         self.client = client
         self.media_types = media_types
         self.config = config
-        self.download_settings = ConfigManager.get_download_settings(config)
+        self.download_settings = StateManager.get_download_settings(config)
         # 按频道维度记录已见消息及进度，避免跨频道互相影响
         self.channel_seen_ids: dict[int, set[int]] = {}
         self.channel_seen_queues: dict[int, deque] = {}
@@ -804,7 +804,7 @@ class TelegramDownloader:
         self.client = None
         self.audio_checker = AudioQualityChecker(self.config)
         self.preprocessor = None
-        self.download_settings = ConfigManager.get_download_settings(self.config)
+        self.download_settings = StateManager.get_download_settings(self.config)
         self.progress_tracker = ProgressTracker(self.download_settings['progress_step'] if 'progress_step' in self.download_settings else 10)
 
     async def initialize(self) -> None:
@@ -814,7 +814,7 @@ class TelegramDownloader:
         logger.debug(f'使用会话文件: {session_path}')
 
         # 准备代理配置
-        proxy = ConfigManager.get_proxy_config(self.config)
+        proxy = StateManager.get_proxy_config(self.config)
 
         self.client = TelegramClient(
             session_path,
@@ -888,7 +888,7 @@ class TelegramDownloader:
                 logger.error(f'无效的选择: {choice}, 错误: {e}')
 
         self.config['selected_channels'] = selected
-        ConfigManager.save_config(self.config)
+        StateManager.save_config(self.config)
         return selected
 
     async def download_media(self, message, channel_title: str) -> None:
