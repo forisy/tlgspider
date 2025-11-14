@@ -132,6 +132,51 @@ class ConfigManager:
                 ConfigManager.save_config(config)
         return config
 
+class StateManager:
+    """用于持久化每个频道的 last_id，避免重复处理已处理消息"""
+    STATE_FILE = os.path.join(CONFIG_DIR, 'state.json')
+
+    @staticmethod
+    def _ensure_state_file() -> None:
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        if not os.path.exists(StateManager.STATE_FILE):
+            try:
+                with open(StateManager.STATE_FILE, 'w', encoding='utf-8') as f:
+                    json.dump({'channels': {}}, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                logger.error(f'创建状态文件失败: {e}')
+
+    @staticmethod
+    def load_state() -> dict:
+        StateManager._ensure_state_file()
+        try:
+            with open(StateManager.STATE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f'读取状态文件失败，使用空状态: {e}')
+            return {'channels': {}}
+
+    @staticmethod
+    def get_last_id(channel_id: int) -> int:
+        state = StateManager.load_state()
+        try:
+            return int(state.get('channels', {}).get(str(channel_id), {}).get('last_id', 0))
+        except Exception:
+            return 0
+
+    @staticmethod
+    def set_last_id(channel_id: int, last_id: int) -> None:
+        StateManager._ensure_state_file()
+        state = StateManager.load_state()
+        channels = state.setdefault('channels', {})
+        ch = channels.setdefault(str(channel_id), {})
+        ch['last_id'] = int(last_id)
+        try:
+            with open(StateManager.STATE_FILE, 'w', encoding='utf-8') as f:
+                json.dump(state, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f'写入状态文件失败: {e}')
+
     @staticmethod
     def _create_initial_config() -> dict:
         print("[首次配置] 请填写以下信息：")
@@ -684,9 +729,10 @@ class MessagePreprocessor:
         self.media_types = media_types
         self.config = config
         self.download_settings = ConfigManager.get_download_settings(config)
-        self.seen_ids = set()  # 用于快速查找
-        self.seen_ids_queue = deque(maxlen=500)
-        self.last_id = 0
+        # 按频道维度记录已见消息及进度，避免跨频道互相影响
+        self.channel_seen_ids: dict[int, set[int]] = {}
+        self.channel_seen_queues: dict[int, deque] = {}
+        self.channel_last_id: dict[int, int] = {}
 
     async def fetch_valid_messages(self, entity) -> list:
         """
@@ -695,22 +741,49 @@ class MessagePreprocessor:
         """
         valid_messages = []
         exhausted = False
+        channel_id = getattr(entity, 'id', None)
+        title = getattr(entity, 'title', str(channel_id))
+
+        if channel_id is None:
+            logger.warning('无法识别频道ID，跳过本次抓取')
+            return valid_messages
+
+        # 初始化频道状态
+        seen_ids = self.channel_seen_ids.setdefault(channel_id, set())
+        seen_queue = self.channel_seen_queues.setdefault(channel_id, deque(maxlen=500))
+        if channel_id not in self.channel_last_id:
+            persisted = StateManager.get_last_id(channel_id)
+            self.channel_last_id[channel_id] = persisted
+        last_id = self.channel_last_id[channel_id]
+
+        logger.info(f'频道 {title} 拉取参数: min_id={last_id}, limit={self.download_settings["batch_size"] * 2}')
 
         while len(valid_messages) < self.download_settings['batch_size'] and not exhausted:
             candidate_messages = []
-            async for msg in self.client.iter_messages(entity, limit=self.download_settings['batch_size'] * 2, offset_id=self.last_id):
-                if msg.id in self.seen_ids:
+            # 使用 min_id 获取比 last_id 更新的消息，而不是 offset_id（offset_id 会取更旧的消息）
+            async for msg in self.client.iter_messages(entity, limit=self.download_settings['batch_size'] * 2, min_id=last_id):
+                if msg.id in seen_ids:
                     continue
                 candidate_messages.append(msg)
-                self.seen_ids.add(msg.id)
-                self.seen_ids_queue.append(msg.id)
-                # 当deque满了，自动移除最旧的ID
-                if len(self.seen_ids_queue) == self.seen_ids_queue.maxlen:
-                    old_id = self.seen_ids_queue[0]
-                    self.seen_ids.discard(old_id)
-                self.last_id = msg.id
+                seen_ids.add(msg.id)
+                seen_queue.append(msg.id)
+                # 当deque达到上限，预先从集合中移除最旧的ID，避免集合膨胀
+                if len(seen_queue) == seen_queue.maxlen:
+                    oldest_id = seen_queue[0]
+                    seen_ids.discard(oldest_id)
+                # 记录该频道的最新消息ID并持久化
+                new_last = max(self.channel_last_id.get(channel_id, 0), msg.id)
+                if new_last != self.channel_last_id.get(channel_id, 0):
+                    self.channel_last_id[channel_id] = new_last
+                    StateManager.set_last_id(channel_id, new_last)
+                    last_id = new_last
+
+            if candidate_messages:
+                max_id = max((m.id for m in candidate_messages), default=last_id)
+                logger.info(f'频道 {title} 候选消息 {len(candidate_messages)} 条，最高ID={max_id}，当前持久化 last_id={last_id}')
             if not candidate_messages:
                 exhausted = True
+                logger.info(f'频道 {title} 无新消息（min_id={last_id}），结束本轮抓取')
                 break
 
             for msg in candidate_messages:
