@@ -52,6 +52,7 @@
   - 支持标准时区格式，如：`Asia/Shanghai`, `America/New_York`, `Europe/London` 等
 - `TGDL_DISABLE_TQDM`: 是否禁用tqdm进度条，设置为`true`则禁用，默认为`false`
 - `TGDL_MAX_FILE_SIZE_MB`: 单个文件的最大下载大小（MB），默认为`500`
+- `TGDL_MIN_FILE_SIZE_MB`: 单个文件的最小下载大小（MB），默认为`0`
 - `TGDL_WAIT_INTERVAL_SECONDS`: 频道无新消息时，等待的秒数，默认为`300`
 - `TGDL_INITIAL_RETRY_DELAY`: 首次重试的延迟时间（秒），默认为`1`
 - `TGDL_MAX_RETRY_DELAY`: 最大重试延迟时间（秒），默认为`1800`
@@ -194,6 +195,7 @@ data/
        ```yaml
        environment:
          - TGDL_MAX_FILE_SIZE_MB=1024
+         - TGDL_MIN_FILE_SIZE_MB=0
          - TZ=Asia/Shanghai
          - TGDL_CLEAN_ON_START=1
          # ... 其他环境变量

@@ -112,6 +112,7 @@ class ConfigManager:
             if 'download_settings' not in config:
                 config['download_settings'] = {
                     'max_file_size_mb': int(os.getenv('TGDL_MAX_FILE_SIZE_MB', '500')),
+                    'min_file_size_mb': int(os.getenv('TGDL_MIN_FILE_SIZE_MB', '0')),
                     'wait_interval_seconds': int(os.getenv('TGDL_WAIT_INTERVAL_SECONDS', '300')),
                     'initial_retry_delay': int(os.getenv('TGDL_INITIAL_RETRY_DELAY', '1')),
                     'max_retry_delay': int(os.getenv('TGDL_MAX_RETRY_DELAY', '1800')),
@@ -158,6 +159,7 @@ class ConfigManager:
             },
             'download_settings': {
                 'max_file_size_mb': int(os.getenv('TGDL_MAX_FILE_SIZE_MB', '500')),
+                'min_file_size_mb': int(os.getenv('TGDL_MIN_FILE_SIZE_MB', '0')),
                 'wait_interval_seconds': int(os.getenv('TGDL_WAIT_INTERVAL_SECONDS', '300')),
                 'initial_retry_delay': int(os.getenv('TGDL_INITIAL_RETRY_DELAY', '1')),
                 'max_retry_delay': int(os.getenv('TGDL_MAX_RETRY_DELAY', '1800')),
@@ -254,6 +256,7 @@ class ConfigManager:
         patterns = [p for p in patterns if p]
         return {
             'max_file_size_mb': int(os.getenv('TGDL_MAX_FILE_SIZE_MB', str(download_settings.get('max_file_size_mb', 500)))) ,
+            'min_file_size_mb': int(os.getenv('TGDL_MIN_FILE_SIZE_MB', str(download_settings.get('min_file_size_mb', 0)))) ,
             'wait_interval_seconds': int(os.getenv('TGDL_WAIT_INTERVAL_SECONDS', str(download_settings.get('wait_interval_seconds', 300)))) ,
             'initial_retry_delay': int(os.getenv('TGDL_INITIAL_RETRY_DELAY', str(download_settings.get('initial_retry_delay', 1)))) ,
             'max_retry_delay': int(os.getenv('TGDL_MAX_RETRY_DELAY', str(download_settings.get('max_retry_delay', 1800)))) ,
@@ -482,8 +485,9 @@ class MediaValidator:
     def check_file_size(size: int, config: dict) -> bool:
         download_settings = ConfigManager.get_download_settings(config)
         max_size = download_settings['max_file_size_mb'] * 1024 * 1024
-        is_valid = size <= max_size
-        logger.debug(f'检查文件大小: {size/1024/1024:.2f}MB, 限制: {download_settings["max_file_size_mb"]}MB, 是否有效: {is_valid}')
+        min_size = download_settings.get('min_file_size_mb', 0) * 1024 * 1024
+        is_valid = size <= max_size and size >= min_size
+        logger.debug(f'检查文件大小: {size/1024/1024:.2f}MB, 最小: {download_settings.get("min_file_size_mb", 0)}MB, 最大: {download_settings["max_file_size_mb"]}MB, 是否有效: {is_valid}')
         return is_valid
 
 class LanguageDetector:
