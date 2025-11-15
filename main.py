@@ -411,6 +411,25 @@ class FileManager:
                     return True
         return False
 
+    @staticmethod
+    def cleanup_unfinished_files(download_settings: dict) -> int:
+        downloading_dir = download_settings.get('downloading_dir', os.path.join(MEDIA_DIR, 'downloading'))
+        os.makedirs(downloading_dir, exist_ok=True)
+        removed = 0
+        try:
+            for name in os.listdir(downloading_dir):
+                if name.endswith('.part'):
+                    path = os.path.join(downloading_dir, name)
+                    try:
+                        os.remove(path)
+                        removed += 1
+                    except Exception as e:
+                        logger.warning(f'清理未完成文件失败: {path}, 错误: {e}')
+        except Exception as e:
+            logger.warning(f'扫描未完成文件失败: {downloading_dir}, 错误: {e}')
+        logger.info(f'启动前清理未完成文件: {removed} 个')
+        return removed
+
 class MediaValidator:
     @staticmethod
     def should_download_media(message, media_types: list, config: dict) -> bool:
@@ -813,6 +832,24 @@ class TelegramDownloader:
         self.preprocessor = None
         self.download_settings = ConfigManager.get_download_settings(self.config)
         self.progress_tracker = ProgressTracker(self.download_settings['progress_step'] if 'progress_step' in self.download_settings else 10)
+        self.log_effective_runtime_config()
+
+    def log_effective_runtime_config(self) -> None:
+        safe_phone = re.sub(r'(\d{3})\d+(\d{2})', r'\1***\2', str(self.config.get('phone_number', '')))
+        payload = {
+            'api_id': self.config.get('api_id'),
+            'api_hash': self.config.get('api_hash'),
+            'phone_number': safe_phone,
+            'media_types': self.config.get('media_types'),
+            'audio_quality_check': self.config.get('audio_quality_check'),
+            'language_filter': self.config.get('language_filter'),
+            'selected_channels': self.config.get('selected_channels', []),
+            'download_settings': self.download_settings,
+        }
+        try:
+            logger.info(f"有效运行时配置: {json.dumps(payload, ensure_ascii=False)}")
+        except Exception:
+            logger.info(f"有效运行时配置: {payload}")
 
     async def initialize(self) -> None:
         logger.info('开始初始化客户端')
@@ -1043,8 +1080,11 @@ async def main():
     logger.info('程序启动')
     parser = argparse.ArgumentParser(description='Telegram 媒体下载器')
     parser.add_argument('-r', '--reconfigure', action='store_true', help='仅进行配置更新，不启动下载')
+    parser.add_argument('-c', '--clean', action='store_true', help='启动前清理未完成文件(.part)')
+    parser.add_argument('--print-config', action='store_true', help='打印有效运行时配置并退出')
     args = parser.parse_args()
     env_reconfigure = os.getenv('TGDL_RECONFIGURE', '').lower() in ('1', 'true', 'yes')
+    env_clean = os.getenv('TGDL_CLEAN_ON_START', '').lower() in ('1', 'true', 'yes')
     loop = asyncio.get_running_loop()
     try:
         loop.add_signal_handler(signal.SIGINT, handle_sigint)
@@ -1061,6 +1101,13 @@ async def main():
         logger.debug('启动Windows信号监听器')
 
     downloader = TelegramDownloader()
+    if args.clean or env_clean:
+        try:
+            FileManager.cleanup_unfinished_files(downloader.download_settings)
+        except Exception as e:
+            logger.warning(f'启动前清理未完成文件发生错误: {e}')
+    if args.print_config:
+        return
     if args.reconfigure or env_reconfigure:
         await downloader.initialize()
         await downloader.select_channels()
