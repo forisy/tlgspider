@@ -7,6 +7,7 @@ import signal
 import sys
 import logging
 import psutil
+import argparse
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 from telethon.tl.types import MessageMediaDocument, DocumentAttributeFilename
@@ -1029,6 +1030,10 @@ def handle_sigint():
 
 async def main():
     logger.info('程序启动')
+    parser = argparse.ArgumentParser(description='Telegram 媒体下载器')
+    parser.add_argument('-r', '--reconfigure', action='store_true', help='仅进行配置更新，不启动下载')
+    args = parser.parse_args()
+    env_reconfigure = os.getenv('TGDL_RECONFIGURE', '').lower() in ('1', 'true', 'yes')
     loop = asyncio.get_running_loop()
     try:
         loop.add_signal_handler(signal.SIGINT, handle_sigint)
@@ -1045,6 +1050,12 @@ async def main():
         logger.debug('启动Windows信号监听器')
 
     downloader = TelegramDownloader()
+    if args.reconfigure or env_reconfigure:
+        await downloader.initialize()
+        await downloader.select_channels()
+        await downloader.client.disconnect()
+        logger.info('重配置完成，未启动下载')
+        return
     await downloader.run()
 
 if __name__ == '__main__':
