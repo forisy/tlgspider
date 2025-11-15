@@ -59,7 +59,8 @@
 - `TGDL_MAX_CONCURRENT_DOWNLOADS`: 单个频道最大并发下载数，默认为`3`
 - `TGDL_BATCH_SIZE`: 每次从Telegram获取消息的批处理大小，默认为`15`
 - `TGDL_PROGRESS_STEP`: 下载进度日志的步长（百分比），默认为`10`
-- `TGDL_EXCLUDE_PATTERNS`: 排除指定模式的文件名，多个模式之间用逗号分隔，支持通配符 * 和 ?，默认为空
+- `TGDL_EXCLUDE_PATTERNS`: 排除包含特定关键字或匹配正则的文件名（逗号分隔）。支持两种形式：关键字（不区分大小写）与正则（以 `re:` 前缀）。
+- `TGDL_RECONFIGURE`: 设置为 `1`/`true`/`yes` 时仅执行重配置，不启动下载
 
 ### 2. 配置文件
 
@@ -128,6 +129,19 @@ data/
     - `频道 <title> 拉取参数: min_id=<last_id>, limit=<N>`
     - `频道 <title> 候选消息 <count> 条，最高ID=<max_id>，当前持久化 last_id=<last_id>`
     - `频道 <title> 无新消息（min_id=<last_id>），结束本轮抓取`
+
+5.  **仅重配置（不下载）**：
+    - 通过参数触发：
+      ```bash
+      python main.py --reconfigure
+      # 或简写
+      python main.py -r
+      ```
+    - 通过环境变量触发：
+      ```bash
+      TGDL_RECONFIGURE=1 python main.py
+      ```
+    - 用途：只更新配置（如重新选择频道），完成后立即退出，不进行任何下载。
 
 ### 方式二：Docker 部署（推荐服务器部署）
 
@@ -235,6 +249,18 @@ data/
     访问项目的 [Release 页面](https://github.com/forisy/tlgspider/releases) 下载对应操作系统的最新版本。
 2.  **运行**：
     下载后，直接运行可执行文件即可。首次运行同样会引导你完成配置。
+    - 正常下载：
+      ```powershell
+      .\dist\tlgspider.exe
+      ```
+    - 仅重配置（不下载）：
+      ```powershell
+      .\dist\tlgspider.exe --reconfigure
+      # 或简写
+      .\dist\tlgspider.exe -r
+      # 或使用环境变量
+      $env:TGDL_RECONFIGURE='1'; .\dist\tlgspider.exe
+      ```
 
 ## 高级特性
 
@@ -264,6 +290,27 @@ data/
 - 文件损坏检测（通过原子写入确保完整性）
 - 优雅处理中断信号（如Ctrl+C），确保程序安全退出并保存状态
 - 详细的错误日志记录，便于用户排查问题
+
+### 文件名排除（关键字与正则）
+
+- 通过配置项 `download_settings.exclude_patterns` 或环境变量 `TGDL_EXCLUDE_PATTERNS` 控制。
+- 支持两类规则：
+  - 关键字：大小写不敏感的子串匹配，例如 `广告,promo`
+  - 正则：以 `re:` 前缀编写正则表达式，例如 `re:免费|福利`, `re:(?i)trial`
+- 示例（`config.json` 片段）：
+  ```json
+  {
+    "download_settings": {
+      "exclude_patterns": [
+        "广告",
+        "promo",
+        "re:免费|福利",
+        "re:(?i)trial"
+      ]
+    }
+  }
+  ```
+- 行为说明：当文件名包含任一关键字或匹配任一正则规则时将跳过下载。
 
 ## 注意事项
 

@@ -249,6 +249,9 @@ class ConfigManager:
     def get_download_settings(config: dict) -> dict:
         """获取下载设置，优先使用配置文件中的值，如果不存在则使用环境变量，最后使用默认值"""
         download_settings = config.get('download_settings', {})
+        raw = os.getenv('TGDL_EXCLUDE_PATTERNS', None)
+        patterns = [p.strip() for p in raw.split(',')] if raw else [p for p in download_settings.get('exclude_patterns', [])]
+        patterns = [p for p in patterns if p]
         return {
             'max_file_size_mb': int(os.getenv('TGDL_MAX_FILE_SIZE_MB', str(download_settings.get('max_file_size_mb', 500)))) ,
             'wait_interval_seconds': int(os.getenv('TGDL_WAIT_INTERVAL_SECONDS', str(download_settings.get('wait_interval_seconds', 300)))) ,
@@ -258,7 +261,7 @@ class ConfigManager:
             'max_concurrent_downloads': int(os.getenv('TGDL_MAX_CONCURRENT_DOWNLOADS', str(download_settings.get('max_concurrent_downloads', 3)))) ,
             'batch_size': int(os.getenv('TGDL_BATCH_SIZE', str(download_settings.get('batch_size', 15)))) ,
             'progress_step': int(os.getenv('TGDL_PROGRESS_STEP', str(download_settings.get('progress_step', 10)))) ,
-            'exclude_patterns': os.getenv('TGDL_EXCLUDE_PATTERNS', '').split(',') if os.getenv('TGDL_EXCLUDE_PATTERNS') else download_settings.get('exclude_patterns', []),
+            'exclude_patterns': patterns,
             'downloading_dir': os.getenv('TGDL_DOWNLOADING_DIR', download_settings.get('downloading_dir', os.path.join(MEDIA_DIR, 'downloading'))),
             'completed_dir': os.getenv('TGDL_COMPLETED_DIR', download_settings.get('completed_dir', os.path.join(MEDIA_DIR, 'completed'))),
             'min_disk_space_mb': int(os.getenv('TGDL_MIN_DISK_SPACE_MB', str(download_settings.get('min_disk_space_mb', 500))))
@@ -388,16 +391,24 @@ class FileManager:
         exclude_patterns = config.get('download_settings', {}).get('exclude_patterns', [])
         if not exclude_patterns:
             return False
-
+        fname_lower = filename.lower()
         for pattern in exclude_patterns:
-            if not pattern:  # 跳过空字符串
+            p = str(pattern).strip()
+            if not p:
                 continue
-            try:
-                if re.search(pattern, filename):
-                    logger.debug(f'文件名 {filename} 匹配排除模式 {pattern}')
+            if p.lower().startswith('re:'):
+                pat = p[3:].strip()
+                try:
+                    if re.search(pat, filename, flags=re.IGNORECASE):
+                        logger.debug(f'文件名 {filename} 匹配排除模式 {pattern}')
+                        return True
+                except re.error as e:
+                    logger.warning(f'排除模式 {pattern} 无效: {e}')
+                    continue
+            else:
+                if p.lower() in fname_lower:
+                    logger.debug(f'文件名 {filename} 包含关键字 {pattern}')
                     return True
-            except re.error as e:
-                logger.warning(f'排除模式 {pattern} 无效: {e}')
         return False
 
 class MediaValidator:
