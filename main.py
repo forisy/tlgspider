@@ -8,6 +8,7 @@ import sys
 import logging
 import psutil
 import argparse
+import requests
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 from telethon.tl.types import MessageMediaDocument, DocumentAttributeFilename
@@ -132,6 +133,12 @@ class ConfigManager:
                     'detection_threshold': 0.7  # 语言检测阈值，用于从文件名判断语言的可信度
                 }
                 ConfigManager.save_config(config)
+            if 'link_submission' not in config:
+                config['link_submission'] = {
+                    'enabled': os.getenv('TGDL_LINK_SUBMIT_ENABLED', '0').lower() in ('1', 'true', 'yes'),
+                    'api_url': os.getenv('TGDL_LINK_SUBMIT_API_URL', '')
+                }
+                ConfigManager.save_config(config)
         return config
 
     @staticmethod
@@ -176,6 +183,10 @@ class ConfigManager:
                 'enabled': input("是否启用语言过滤(yes/no): ").lower() == 'yes',
                 'languages': input("要下载的语言列表（逗号分隔 cn,zh,en）: ").split(',') if input("是否启用语言过滤(yes/no): ").lower() == 'yes' else ['cn', 'zh'],
                 'detection_threshold': float(input("语言检测阈值(0-1): ")) if input("是否启用语言过滤(yes/no): ").lower() == 'yes' else 0.7
+            },
+            'link_submission': {
+                'enabled': os.getenv('TGDL_LINK_SUBMIT_ENABLED', '0').lower() in ('1', 'true', 'yes'),
+                'api_url': os.getenv('TGDL_LINK_SUBMIT_API_URL', '')
             },
         }
         logger.info('创建新的配置文件')
@@ -490,6 +501,123 @@ class MediaValidator:
         logger.debug(f'检查文件大小: {size/1024/1024:.2f}MB, 最小: {download_settings.get("min_file_size_mb", 0)}MB, 最大: {download_settings["max_file_size_mb"]}MB, 是否有效: {is_valid}')
         return is_valid
 
+class CloudLinkProcessor:
+    def find_links(self, text: str) -> list:
+        return []
+
+class BaiduPanProcessor(CloudLinkProcessor):
+    def find_links(self, text: str) -> list:
+        results = []
+        for m in re.finditer(r'https?://pan\.baidu\.com/s/[\w-]+(?:\?[^\s]*)?', text):
+            url = m.group(0)
+            code = ''
+            q = re.search(r'[?&]pwd=([A-Za-z0-9]{4,6})', url)
+            if q:
+                code = q.group(1)
+            else:
+                code_match = re.search(r'(提取码|密码)[\s:：]*([A-Za-z0-9]{4,6})', text)
+                code = code_match.group(2) if code_match else ''
+            results.append({'provider': 'baidupan', 'url': url, 'code': code})
+        return results
+
+class AliyunDriveProcessor(CloudLinkProcessor):
+    def find_links(self, text: str) -> list:
+        results = []
+        for m in re.finditer(r'https?://(?:www\.)?(?:aliyundrive\.com|alipan\.com)/s/[\w-]+', text):
+            url = m.group(0)
+            code_match = re.search(r'(提取码|密码)[\s:：]*([A-Za-z0-9]{4,6})', text)
+            results.append({'provider': 'aliyundrive', 'url': url, 'code': code_match.group(2) if code_match else ''})
+        return results
+
+class GoogleDriveProcessor(CloudLinkProcessor):
+    def find_links(self, text: str) -> list:
+        results = []
+        patterns = [
+            r'https?://drive\.google\.com/file/d/[^\s]+',
+            r'https?://drive\.google\.com/drive/folders/[^\s]+',
+            r'https?://drive\.google\.com/open\?id=[^\s]+'
+        ]
+        for p in patterns:
+            for m in re.finditer(p, text):
+                results.append({'provider': 'gdrive', 'url': m.group(0), 'code': ''})
+        return results
+
+class DropboxProcessor(CloudLinkProcessor):
+    def find_links(self, text: str) -> list:
+        results = []
+        for m in re.finditer(r'https?://(?:www\.)?dropbox\.com/s/[^\s]+', text):
+            results.append({'provider': 'dropbox', 'url': m.group(0), 'code': ''})
+        return results
+
+class OneDriveProcessor(CloudLinkProcessor):
+    def find_links(self, text: str) -> list:
+        results = []
+        patterns = [r'https?://1drv\.ms/[^\s]+', r'https?://[^\s]*onedrive\.live\.com/[^\s]+']
+        for p in patterns:
+            for m in re.finditer(p, text):
+                results.append({'provider': 'onedrive', 'url': m.group(0), 'code': ''})
+        return results
+
+class MegaProcessor(CloudLinkProcessor):
+    def find_links(self, text: str) -> list:
+        results = []
+        for m in re.finditer(r'https?://mega\.nz/(?:file|folder)/[^\s]+', text):
+            url = m.group(0)
+            key_match = re.search(r'#([A-Za-z0-9_-]+)', url)
+            results.append({'provider': 'mega', 'url': url, 'code': key_match.group(1) if key_match else ''})
+        return results
+
+class ResourceExtractor:
+    PROCESSORS = [
+        BaiduPanProcessor(),
+        AliyunDriveProcessor(),
+        GoogleDriveProcessor(),
+        DropboxProcessor(),
+        OneDriveProcessor(),
+        MegaProcessor(),
+    ]
+
+    @staticmethod
+    def extract_links(text: str) -> list:
+        if not text:
+            return []
+        found = []
+        for proc in ResourceExtractor.PROCESSORS:
+            try:
+                found.extend(proc.find_links(text))
+            except Exception:
+                pass
+        return found
+
+    @staticmethod
+    def build_full_url(provider: str, url: str, code: str) -> str:
+        try:
+            if provider == 'baidupan':
+                if re.search(r'[?&]pwd=', url):
+                    return url
+                if code:
+                    return url + ('&' if '?' in url else '?') + f'pwd={code}'
+                return url
+            return url
+        except Exception:
+            return url
+
+    @staticmethod
+    def extract_from_message(msg) -> list:
+        text = getattr(msg, 'message', '') or ''
+        links = ResourceExtractor.extract_links(text)
+        tasks = []
+        for link in links:
+            tasks.append({
+                'kind': 'cloud_link',
+                'message_id': msg.id,
+                'provider': link.get('provider', ''),
+                'url': link.get('url', ''),
+                'code': link.get('code', ''),
+                'full_url': ResourceExtractor.build_full_url(link.get('provider', ''), link.get('url', ''), link.get('code', '')),
+            })
+        return tasks
+
 class LanguageDetector:
     """用于从文件名检测语言的工具类"""
     
@@ -770,14 +898,14 @@ class MessagePreprocessor:
         尝试获取 batch_size 条满足下载条件的消息（媒体类型 + 文件大小）
         如果已无新消息，可能返回不足 batch_size 条
         """
-        valid_messages = []
+        valid_resources = []
         exhausted = False
         channel_id = getattr(entity, 'id', None)
         title = getattr(entity, 'title', str(channel_id))
 
         if channel_id is None:
             logger.warning('无法识别频道ID，跳过本次抓取')
-            return valid_messages
+            return valid_resources
 
         # 初始化频道状态
         seen_ids = self.channel_seen_ids.setdefault(channel_id, set())
@@ -789,7 +917,7 @@ class MessagePreprocessor:
 
         logger.info(f'频道 {title} 拉取参数: min_id={last_id}, limit={self.download_settings["batch_size"] * 2}')
 
-        while len(valid_messages) < self.download_settings['batch_size'] and not exhausted:
+        while len(valid_resources) < self.download_settings['batch_size'] and not exhausted:
             candidate_messages = []
             # 使用 min_id 获取比 last_id 更新的消息，而不是 offset_id（offset_id 会取更旧的消息）
             async for msg in self.client.iter_messages(entity, limit=self.download_settings['batch_size'] * 2, min_id=last_id):
@@ -821,11 +949,16 @@ class MessagePreprocessor:
                     doc = msg.media.document
                     size = getattr(doc, 'size', 0)
                     if MediaValidator.check_file_size(size, self.config):
-                        valid_messages.append(msg)
-                        if len(valid_messages) >= self.download_settings['batch_size']:
+                        valid_resources.append({'kind': 'telegram_media', 'message': msg, 'message_id': msg.id})
+                        if len(valid_resources) >= self.download_settings['batch_size']:
                             break
+                cloud_tasks = ResourceExtractor.extract_from_message(msg)
+                for t in cloud_tasks:
+                    valid_resources.append(t)
+                    if len(valid_resources) >= self.download_settings['batch_size']:
+                        break
 
-        return valid_messages
+        return valid_resources
 
 class TelegramDownloader:
     def __init__(self):
@@ -1002,6 +1135,38 @@ class TelegramDownloader:
             # 清理进度跟踪器
             DISABLE_TQDM and self.progress_tracker.clear(safe_name)
 
+    async def handle_cloud_link(self, task: dict, channel_title: str) -> bool:
+        try:
+            provider = task.get('provider', '')
+            url = task.get('url', '')
+            code = task.get('code', '')
+            full_url = task.get('full_url', url)
+            settings = self.config.get('link_submission', {})
+            if settings.get('enabled') and settings.get('api_url'):
+                payload = {
+                    'provider': provider,
+                    'src_url': url,
+                    'url': full_url,
+                    'code': code,
+                    'message_id': task.get('message_id'),
+                    'channel_title': channel_title
+                }
+                def _post():
+                    return requests.post(settings['api_url'], json=payload, timeout=10)
+                resp = await asyncio.to_thread(_post)
+                ok = 200 <= resp.status_code < 300
+                if ok:
+                    logger.info(f'提交云盘任务成功: {channel_title} [{provider}] {full_url}')
+                else:
+                    logger.error(f'提交云盘任务失败: {resp.status_code} {resp.text}')
+                return ok
+            else:
+                logger.info(f'识别到云盘链接: {channel_title} [{provider}] {full_url} 提取码:{code or "N/A"}')
+                return True
+        except Exception as e:
+            logger.error(f'处理云盘链接失败: {e}')
+            return False
+
     async def _limited_download(self, sem: Semaphore, message, title: str):
         async with sem:
             ok = await self.download_media(message, title)
@@ -1019,19 +1184,26 @@ class TelegramDownloader:
 
             while not stop_event.is_set():
                 try:
-                    messages = await self.preprocessor.fetch_valid_messages(entity)
-                    if not messages:
+                    tasks = await self.preprocessor.fetch_valid_messages(entity)
+                    if not tasks:
                         logger.info(f'频道 {title} 暂无新消息，等待 {self.download_settings["wait_interval_seconds"]} 秒')
                         await asyncio.sleep(self.download_settings['wait_interval_seconds'])
                         continue
 
-                    logger.info(f'{title} 获取到 {len(messages)} 条有效消息，开始并发下载')
-                    tasks = [self._limited_download(sem, msg, title) for msg in messages]
-                    results = await asyncio.gather(*tasks)
+                    media_tasks = [t for t in tasks if t.get('kind') == 'telegram_media']
+                    link_tasks = [t for t in tasks if t.get('kind') == 'cloud_link']
+                    logger.info(f'{title} 资源任务: 媒体 {len(media_tasks)} 条，云盘链接 {len(link_tasks)} 条')
+                    media_jobs = [self._limited_download(sem, t['message'], title) for t in media_tasks]
+                    media_results = await asyncio.gather(*media_jobs)
+                    link_success_ids = []
+                    for lt in link_tasks:
+                        ok = await self.handle_cloud_link(lt, title)
+                        if ok:
+                            link_success_ids.append(lt.get('message_id'))
 
-                    # 仅在成功下载后推进该频道的持久化 last_id，避免重启后遗漏未下载消息
                     channel_id_int = int(channel)
-                    success_ids = [mid for (mid, ok) in results if ok]
+                    success_ids = [mid for (mid, ok) in media_results if ok]
+                    success_ids.extend([mid for mid in link_success_ids if mid])
                     if success_ids:
                         new_last = max(success_ids)
                         StateManager.set_last_id(channel_id_int, new_last)

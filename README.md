@@ -20,6 +20,11 @@
     - 自动覆盖低质量文件，确保本地文件始终为最高质量版本
     - 可配置最小质量阈值，如最小文件大小、最小比特率和最小音频时长
 
+- 资源识别与提交
+  - 从消息文本中识别常见网盘链接：百度网盘、阿里云盘（阿里盘）、Google Drive、Dropbox、OneDrive、MEGA
+  - 识别提取码并生成完整链接字段 `full_url`（例如百度网盘自动补齐 `?pwd=XXXX`）
+  - 可选将识别到的链接以 `POST JSON` 提交到外部接口（可配置）
+
 - 灵活的重试策略
   - 采用指数退避算法，智能调整重试间隔，从1秒开始，最大不超过30分钟
   - 自动处理网络波动和连接错误，提高下载稳定性
@@ -63,6 +68,8 @@
 - `TGDL_EXCLUDE_PATTERNS`: 排除包含特定关键字或匹配正则的文件名（逗号分隔）。支持两种形式：关键字（不区分大小写）与正则（以 `re:` 前缀）。
 - `TGDL_RECONFIGURE`: 设置为 `1`/`true`/`yes` 时仅执行重配置，不启动下载
 - `TGDL_CLEAN_ON_START`: 设置为 `1`/`true`/`yes` 时在启动前清理未完成的临时文件（`.part`）
+- `TGDL_LINK_SUBMIT_ENABLED`: 设置为 `1`/`true`/`yes` 启用云盘链接提交到接口
+- `TGDL_LINK_SUBMIT_API_URL`: 云盘链接提交目标接口地址（HTTP URL）
 
 ### 2. 配置文件
 
@@ -93,6 +100,10 @@
   - `max_concurrent_downloads`: 单个频道最大并发下载数，默认为3
   - `batch_size`: 每次从Telegram获取消息的批处理大小，默认为15
   - `progress_step`: 下载进度日志的步长（百分比），默认为10
+
+- 链接提交配置（可选）：
+  - `link_submission.enabled`: 是否启用云盘链接提交到接口（布尔）
+  - `link_submission.api_url`: 提交的目标接口地址（HTTP URL）
 
 ### 3. 目录结构
 
@@ -198,6 +209,8 @@ data/
          - TGDL_MIN_FILE_SIZE_MB=0
          - TZ=Asia/Shanghai
          - TGDL_CLEAN_ON_START=1
+         - TGDL_LINK_SUBMIT_ENABLED=1
+         - TGDL_LINK_SUBMIT_API_URL=http://your-api/endpoint
          # ... 其他环境变量
        ```
 
@@ -370,6 +383,7 @@ data/
 - [x] 音频文件质量检查，支持大小、比特率和时长多维度判断
 - [x] 支持代理配置，兼容多种代理类型和环境变量读取
 - [x] 断点续传和任务恢复功能
+- [x] 消息文本网盘链接识别与完整链接生成，支持提交到外部接口
 
 计划中：
 - [ ] 支持更多媒体类型
