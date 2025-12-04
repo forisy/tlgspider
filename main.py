@@ -567,6 +567,29 @@ class MegaProcessor(CloudLinkProcessor):
             results.append({'provider': 'mega', 'url': url, 'code': key_match.group(1) if key_match else ''})
         return results
 
+class QuarkProcessor(CloudLinkProcessor):
+    def find_links(self, text: str) -> list:
+        results = []
+        for m in re.finditer(r'https?://pan\.quark\.cn/s/[^\s]+', text):
+            results.append({'provider': 'quark', 'url': m.group(0), 'code': ''})
+        return results
+
+class XunleiProcessor(CloudLinkProcessor):
+    def find_links(self, text: str) -> list:
+        results = []
+        for m in re.finditer(r'https?://pan\.xunlei\.com/s/[^\s]+', text):
+            results.append({'provider': 'xunlei', 'url': m.group(0), 'code': ''})
+        for m in re.finditer(r'thunder://[^\s]+', text):
+            results.append({'provider': 'xunlei', 'url': m.group(0), 'code': ''})
+        return results
+
+class UCDriveProcessor(CloudLinkProcessor):
+    def find_links(self, text: str) -> list:
+        results = []
+        for m in re.finditer(r'https?://(?:www\.)?drive\.uc\.cn/s/[^\s]+', text):
+            results.append({'provider': 'ucdrive', 'url': m.group(0), 'code': ''})
+        return results
+
 class ResourceExtractor:
     PROCESSORS = [
         BaiduPanProcessor(),
@@ -575,6 +598,9 @@ class ResourceExtractor:
         DropboxProcessor(),
         OneDriveProcessor(),
         MegaProcessor(),
+        QuarkProcessor(),
+        XunleiProcessor(),
+        UCDriveProcessor(),
     ]
 
     @staticmethod
@@ -603,6 +629,49 @@ class ResourceExtractor:
             return url
 
     @staticmethod
+    def parse_bot_deeplinks(text: str) -> list:
+        links = []
+        if not text:
+            return links
+        pattern = r'https?://t\.me/([A-Za-z0-9_]+)\?start=([A-Za-z0-9_\-]+)'
+        for m in re.finditer(pattern, text):
+            bot = m.group(1)
+            payload = m.group(2)
+            parts = payload.split('_')
+            action = parts[0] if parts else ''
+            is_get_link = False
+            if len(parts) >= 2 and parts[0] == 'get' and parts[1] == 'link':
+                is_get_link = True
+                parts = parts[2:]
+            elif action in ('getlink', 'get_link'):
+                is_get_link = True
+                parts = parts[1:]
+            if is_get_link and len(parts) >= 3:
+                chat_id_s, msg_id_s, provider = parts[0], parts[1], parts[2]
+                provider_map = {
+                    'baidu': 'baidupan',
+                    'baidupan': 'baidupan',
+                    'alipan': 'aliyundrive',
+                    'aliyundrive': 'aliyundrive',
+                    'quark': 'quark',
+                    'xunlei': 'xunlei',
+                    'thunder': 'xunlei',
+                    'uc': 'ucdrive',
+                    'ucdrive': 'ucdrive',
+                }
+                provider = provider_map.get(provider.lower(), provider.lower())
+                links.append({
+                    'bot': bot,
+                    'action': 'get_link',
+                    'chat_id': chat_id_s,
+                    'message_id': msg_id_s,
+                    'provider': provider
+                })
+            else:
+                links.append({'bot': bot, 'action': 'start', 'payload': payload})
+        return links
+
+    @staticmethod
     def extract_from_message(msg) -> list:
         text = getattr(msg, 'message', '') or ''
         links = ResourceExtractor.extract_links(text)
@@ -617,6 +686,78 @@ class ResourceExtractor:
                 'full_url': ResourceExtractor.build_full_url(link.get('provider', ''), link.get('url', ''), link.get('code', '')),
             })
         return tasks
+
+class MessageFormatter:
+    @staticmethod
+    def _summarize_text(text: str, max_len: int = 160) -> str:
+        s = re.sub(r'\s+', ' ', text or '').strip()
+        if len(s) > max_len:
+            return s[:max_len - 1] + '…'
+        return s
+
+    @staticmethod
+    def _human_size(size: int | None) -> str:
+        try:
+            if not size:
+                return '0MB'
+            return f'{size / 1024 / 1024:.2f}MB'
+        except Exception:
+            return str(size or 0)
+
+    @staticmethod
+    def format(msg) -> str:
+        parts = []
+        try:
+            mid = getattr(msg, 'id', None)
+            dt = getattr(msg, 'date', None)
+            dt_str = ''
+            if dt:
+                try:
+                    dt_str = dt.astimezone().strftime('%Y-%m-%d %H:%M:%S')
+                except Exception:
+                    dt_str = str(dt)
+            parts.append(f'#{mid} {dt_str}')
+            text = getattr(msg, 'message', '') or ''
+            if text:
+                parts.append(f'text="{MessageFormatter._summarize_text(text)}"')
+            if getattr(msg, 'media', None) and hasattr(msg.media, 'document'):
+                doc = msg.media.document
+                size = getattr(doc, 'size', 0)
+                mime = getattr(doc, 'mime_type', '') or ''
+                fname = ''
+                try:
+                    for attr in getattr(doc, 'attributes', []) or []:
+                        if isinstance(attr, DocumentAttributeFilename):
+                            fname = attr.file_name
+                            break
+                except Exception:
+                    fname = ''
+                parts.append(f'media={mime or "-"} name="{fname or "-"}" size={MessageFormatter._human_size(size)}')
+            try:
+                found = ResourceExtractor.extract_links(text)
+                if found:
+                    urls = []
+                    for l in found[:3]:
+                        u = l.get('url') or ''
+                        urls.append(u)
+                    more = '' if len(found) <= 3 else f' (+{len(found)-3})'
+                    parts.append('links=' + ','.join(urls) + more)
+            except Exception:
+                pass
+            try:
+                dls = ResourceExtractor.parse_bot_deeplinks(text)
+                if dls:
+                    items = []
+                    for dl in dls[:3]:
+                        p = dl.get('provider','')
+                        items.append(f'{dl.get("bot","")}:{dl.get("action","")}{":"+p if p else ""}')
+                    more = '' if len(dls) <= 3 else f' (+{len(dls)-3})'
+                    parts.append('deeplinks=' + ','.join(items) + more)
+            except Exception:
+                pass
+        except Exception:
+            parts.append(str(getattr(msg, 'id', ''))) 
+        return ' | '.join([p for p in parts if p])
 
 class LanguageDetector:
     """用于从文件名检测语言的工具类"""
@@ -945,6 +1086,10 @@ class MessagePreprocessor:
                 break
 
             for msg in candidate_messages:
+                try:
+                    logger.info(MessageFormatter.format(msg))
+                except Exception:
+                    pass
                 if MediaValidator.should_download_media(msg, self.media_types, self.config):
                     doc = msg.media.document
                     size = getattr(doc, 'size', 0)
@@ -957,6 +1102,37 @@ class MessagePreprocessor:
                     valid_resources.append(t)
                     if len(valid_resources) >= self.download_settings['batch_size']:
                         break
+
+                try:
+                    text = getattr(msg, 'message', '') or ''
+                    deeplinks = ResourceExtractor.parse_bot_deeplinks(text)
+                    for dl in deeplinks:
+                        chat_id_s = dl.get('chat_id')
+                        msg_id_s = dl.get('message_id')
+                        if not chat_id_s or not msg_id_s:
+                            continue
+                        try:
+                            ref_entity = await self.client.get_entity(int(chat_id_s))
+                            ref_msg = await self.client.get_messages(ref_entity, ids=int(msg_id_s))
+                            ref_text = getattr(ref_msg, 'message', '') or ''
+                            ref_links = ResourceExtractor.extract_links(ref_text)
+                            for link in ref_links:
+                                valid_resources.append({
+                                    'kind': 'cloud_link',
+                                    'message_id': msg.id,
+                                    'provider': link.get('provider', ''),
+                                    'url': link.get('url', ''),
+                                    'code': link.get('code', ''),
+                                    'full_url': ResourceExtractor.build_full_url(link.get('provider', ''), link.get('url', ''), link.get('code', '')),
+                                })
+                                if len(valid_resources) >= self.download_settings['batch_size']:
+                                    break
+                        except Exception:
+                            pass
+                        if len(valid_resources) >= self.download_settings['batch_size']:
+                            break
+                except Exception:
+                    pass
 
         return valid_resources
 
