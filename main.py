@@ -653,6 +653,7 @@ class ResourceExtractor:
                     'baidupan': 'baidupan',
                     'alipan': 'aliyundrive',
                     'aliyundrive': 'aliyundrive',
+                    'aliyun': 'aliyundrive',
                     'quark': 'quark',
                     'xunlei': 'xunlei',
                     'thunder': 'xunlei',
@@ -672,9 +673,43 @@ class ResourceExtractor:
         return links
 
     @staticmethod
+    def extract_entity_urls(msg) -> list:
+        urls = []
+        try:
+            text = getattr(msg, 'message', '') or ''
+            entities = getattr(msg, 'entities', []) or []
+            for ent in entities:
+                u = getattr(ent, 'url', None)
+                if u:
+                    urls.append(u)
+                else:
+                    offset = getattr(ent, 'offset', None)
+                    length = getattr(ent, 'length', None)
+                    if offset is not None and length is not None and text:
+                        seg = text[offset:offset+length]
+                        if seg:
+                            urls.append(seg)
+            seen = set()
+            deduped = []
+            for u in urls:
+                if u not in seen:
+                    seen.add(u)
+                    deduped.append(u)
+            return deduped
+        except Exception:
+            return []
+
+    @staticmethod
     def extract_from_message(msg) -> list:
         text = getattr(msg, 'message', '') or ''
         links = ResourceExtractor.extract_links(text)
+        entity_urls = ResourceExtractor.extract_entity_urls(msg)
+        for u in entity_urls:
+            for proc in ResourceExtractor.PROCESSORS:
+                try:
+                    links.extend(proc.find_links(u))
+                except Exception:
+                    pass
         tasks = []
         for link in links:
             tasks.append({
@@ -734,7 +769,16 @@ class MessageFormatter:
                     fname = ''
                 parts.append(f'media={mime or "-"} name="{fname or "-"}" size={MessageFormatter._human_size(size)}')
             try:
-                found = ResourceExtractor.extract_links(text)
+                found_text = ResourceExtractor.extract_links(text)
+                entity_urls = ResourceExtractor.extract_entity_urls(msg)
+                found_entities = []
+                for u in entity_urls:
+                    for proc in ResourceExtractor.PROCESSORS:
+                        try:
+                            found_entities.extend(proc.find_links(u))
+                        except Exception:
+                            pass
+                found = found_text + found_entities
                 if found:
                     urls = []
                     for l in found[:3]:
@@ -745,7 +789,15 @@ class MessageFormatter:
             except Exception:
                 pass
             try:
-                dls = ResourceExtractor.parse_bot_deeplinks(text)
+                dls_text = ResourceExtractor.parse_bot_deeplinks(text)
+                entity_urls = ResourceExtractor.extract_entity_urls(msg)
+                dls_entities = []
+                for u in entity_urls:
+                    try:
+                        dls_entities.extend(ResourceExtractor.parse_bot_deeplinks(u))
+                    except Exception:
+                        pass
+                dls = dls_text + dls_entities
                 if dls:
                     items = []
                     for dl in dls[:3]:
@@ -1105,7 +1157,15 @@ class MessagePreprocessor:
 
                 try:
                     text = getattr(msg, 'message', '') or ''
-                    deeplinks = ResourceExtractor.parse_bot_deeplinks(text)
+                    dls_text = ResourceExtractor.parse_bot_deeplinks(text)
+                    entity_urls = ResourceExtractor.extract_entity_urls(msg)
+                    dls_entities = []
+                    for u in entity_urls:
+                        try:
+                            dls_entities.extend(ResourceExtractor.parse_bot_deeplinks(u))
+                        except Exception:
+                            pass
+                    deeplinks = dls_text + dls_entities
                     for dl in deeplinks:
                         chat_id_s = dl.get('chat_id')
                         msg_id_s = dl.get('message_id')
@@ -1116,6 +1176,13 @@ class MessagePreprocessor:
                             ref_msg = await self.client.get_messages(ref_entity, ids=int(msg_id_s))
                             ref_text = getattr(ref_msg, 'message', '') or ''
                             ref_links = ResourceExtractor.extract_links(ref_text)
+                            ref_entity_urls = ResourceExtractor.extract_entity_urls(ref_msg)
+                            for u in ref_entity_urls:
+                                for proc in ResourceExtractor.PROCESSORS:
+                                    try:
+                                        ref_links.extend(proc.find_links(u))
+                                    except Exception:
+                                        pass
                             for link in ref_links:
                                 valid_resources.append({
                                     'kind': 'cloud_link',
