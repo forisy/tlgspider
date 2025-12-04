@@ -139,6 +139,13 @@ class ConfigManager:
                     'api_url': os.getenv('TGDL_LINK_SUBMIT_API_URL', '')
                 }
                 ConfigManager.save_config(config)
+            if 'bot_interaction' not in config:
+                config['bot_interaction'] = {
+                    'allowed_start_bots': [],
+                    'start_reply_wait_seconds': int(os.getenv('TGDL_START_REPLY_WAIT_SECONDS', '3')),
+                    'start_reply_limit': int(os.getenv('TGDL_START_REPLY_LIMIT', '5'))
+                }
+                ConfigManager.save_config(config)
         return config
 
     @staticmethod
@@ -187,6 +194,11 @@ class ConfigManager:
             'link_submission': {
                 'enabled': os.getenv('TGDL_LINK_SUBMIT_ENABLED', '0').lower() in ('1', 'true', 'yes'),
                 'api_url': os.getenv('TGDL_LINK_SUBMIT_API_URL', '')
+            },
+            'bot_interaction': {
+                'allowed_start_bots': [],
+                'start_reply_wait_seconds': int(os.getenv('TGDL_START_REPLY_WAIT_SECONDS', '3')),
+                'start_reply_limit': int(os.getenv('TGDL_START_REPLY_LIMIT', '5'))
             },
         }
         logger.info('创建新的配置文件')
@@ -1205,6 +1217,9 @@ class MessagePreprocessor:
                         bot_name = dl.get('bot')
                         if not bot_name:
                             continue
+                        allowed_bots = set(self.config.get('bot_interaction', {}).get('allowed_start_bots', []) or [])
+                        if allowed_bots and bot_name not in allowed_bots:
+                            continue
                         try:
                             bot_entity = await self.client.get_entity(bot_name)
                             payload_provider = dl.get('provider_raw') or dl.get('provider') or ''
@@ -1212,8 +1227,11 @@ class MessagePreprocessor:
                             if payload_provider:
                                 payload = payload + f"_{payload_provider}"
                             sent_msg = await self.client.send_message(bot_entity, f"/start {payload}")
-                            await asyncio.sleep(2)
-                            async for reply in self.client.iter_messages(bot_entity, min_id=sent_msg.id, limit=5):
+                            wait_sec = int(self.config.get('bot_interaction', {}).get('start_reply_wait_seconds', 3))
+                            limit = int(self.config.get('bot_interaction', {}).get('start_reply_limit', 5))
+                            await asyncio.sleep(wait_sec)
+                            found_links = []
+                            async for reply in self.client.iter_messages(bot_entity, min_id=sent_msg.id, limit=limit):
                                 rtext = getattr(reply, 'message', '') or ''
                                 links = ResourceExtractor.extract_links(rtext)
                                 entity_urls2 = ResourceExtractor.extract_entity_urls(reply)
@@ -1223,19 +1241,36 @@ class MessagePreprocessor:
                                             links.extend(proc.find_links(u))
                                         except Exception:
                                             pass
-                                for link in links:
-                                    valid_resources.append({
-                                        'kind': 'cloud_link',
-                                        'message_id': msg.id,
-                                        'provider': link.get('provider', ''),
-                                        'url': link.get('url', ''),
-                                        'code': link.get('code', ''),
-                                        'full_url': ResourceExtractor.build_full_url(link.get('provider', ''), link.get('url', ''), link.get('code', '')),
-                                    })
-                                    if len(valid_resources) >= self.download_settings['batch_size']:
-                                        break
+                                if links:
+                                    found_links.extend(links)
+                            if not found_links:
+                                async for reply in self.client.iter_messages(bot_entity, limit=limit):
+                                    if getattr(reply, 'reply_to_msg_id', None) and reply.reply_to_msg_id == sent_msg.id:
+                                        rtext = getattr(reply, 'message', '') or ''
+                                        links = ResourceExtractor.extract_links(rtext)
+                                        entity_urls2 = ResourceExtractor.extract_entity_urls(reply)
+                                        for u in entity_urls2:
+                                            for proc in ResourceExtractor.PROCESSORS:
+                                                try:
+                                                    links.extend(proc.find_links(u))
+                                                except Exception:
+                                                    pass
+                                        if links:
+                                            found_links.extend(links)
+                                            break
+                            for link in found_links:
+                                valid_resources.append({
+                                    'kind': 'cloud_link',
+                                    'message_id': msg.id,
+                                    'provider': link.get('provider', ''),
+                                    'url': link.get('url', ''),
+                                    'code': link.get('code', ''),
+                                    'full_url': ResourceExtractor.build_full_url(link.get('provider', ''), link.get('url', ''), link.get('code', '')),
+                                })
                                 if len(valid_resources) >= self.download_settings['batch_size']:
                                     break
+                            if len(valid_resources) >= self.download_settings['batch_size']:
+                                break
                         except Exception:
                             pass
                 except Exception:
