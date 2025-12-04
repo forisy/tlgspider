@@ -648,6 +648,7 @@ class ResourceExtractor:
                 parts = parts[1:]
             if is_get_link and len(parts) >= 3:
                 chat_id_s, msg_id_s, provider = parts[0], parts[1], parts[2]
+                provider_raw = provider.lower()
                 provider_map = {
                     'baidu': 'baidupan',
                     'baidupan': 'baidupan',
@@ -660,13 +661,14 @@ class ResourceExtractor:
                     'uc': 'ucdrive',
                     'ucdrive': 'ucdrive',
                 }
-                provider = provider_map.get(provider.lower(), provider.lower())
+                provider = provider_map.get(provider_raw, provider_raw)
                 links.append({
                     'bot': bot,
                     'action': 'get_link',
                     'chat_id': chat_id_s,
                     'message_id': msg_id_s,
-                    'provider': provider
+                    'provider': provider,
+                    'provider_raw': provider_raw
                 })
             else:
                 links.append({'bot': bot, 'action': 'start', 'payload': payload})
@@ -1198,6 +1200,44 @@ class MessagePreprocessor:
                             pass
                         if len(valid_resources) >= self.download_settings['batch_size']:
                             break
+
+                    for dl in deeplinks:
+                        bot_name = dl.get('bot')
+                        if not bot_name:
+                            continue
+                        try:
+                            bot_entity = await self.client.get_entity(bot_name)
+                            payload_provider = dl.get('provider_raw') or dl.get('provider') or ''
+                            payload = f"{dl.get('action','get_link')}_{dl.get('chat_id','')}_{dl.get('message_id','')}"
+                            if payload_provider:
+                                payload = payload + f"_{payload_provider}"
+                            sent_msg = await self.client.send_message(bot_entity, f"/start {payload}")
+                            await asyncio.sleep(2)
+                            async for reply in self.client.iter_messages(bot_entity, min_id=sent_msg.id, limit=5):
+                                rtext = getattr(reply, 'message', '') or ''
+                                links = ResourceExtractor.extract_links(rtext)
+                                entity_urls2 = ResourceExtractor.extract_entity_urls(reply)
+                                for u in entity_urls2:
+                                    for proc in ResourceExtractor.PROCESSORS:
+                                        try:
+                                            links.extend(proc.find_links(u))
+                                        except Exception:
+                                            pass
+                                for link in links:
+                                    valid_resources.append({
+                                        'kind': 'cloud_link',
+                                        'message_id': msg.id,
+                                        'provider': link.get('provider', ''),
+                                        'url': link.get('url', ''),
+                                        'code': link.get('code', ''),
+                                        'full_url': ResourceExtractor.build_full_url(link.get('provider', ''), link.get('url', ''), link.get('code', '')),
+                                    })
+                                    if len(valid_resources) >= self.download_settings['batch_size']:
+                                        break
+                                if len(valid_resources) >= self.download_settings['batch_size']:
+                                    break
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
