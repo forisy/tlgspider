@@ -1232,6 +1232,10 @@ class MessagePreprocessor:
                             await asyncio.sleep(wait_sec)
                             found_links = []
                             async for reply in self.client.iter_messages(bot_entity, min_id=sent_msg.id, limit=limit):
+                                try:
+                                    logger.info(MessageFormatter.format(reply))
+                                except Exception:
+                                    pass
                                 rtext = getattr(reply, 'message', '') or ''
                                 links = ResourceExtractor.extract_links(rtext)
                                 entity_urls2 = ResourceExtractor.extract_entity_urls(reply)
@@ -1245,6 +1249,10 @@ class MessagePreprocessor:
                                     found_links.extend(links)
                             if not found_links:
                                 async for reply in self.client.iter_messages(bot_entity, limit=limit):
+                                    try:
+                                        logger.info(MessageFormatter.format(reply))
+                                    except Exception:
+                                        pass
                                     if getattr(reply, 'reply_to_msg_id', None) and reply.reply_to_msg_id == sent_msg.id:
                                         rtext = getattr(reply, 'message', '') or ''
                                         links = ResourceExtractor.extract_links(rtext)
